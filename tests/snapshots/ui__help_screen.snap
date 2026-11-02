@@ -4,21 +4,21 @@ expression: text(&mut a)
 ---
  Keys                                                                               F1 or Esc close
 
-  Move                                             Hunks
-  j k        line down, up                         J K        next, previous
-  Ctrl-d u   half page                             ]c [c      next, previous
-  gg G       top, bottom                           >          copy to right
-  ← →        scroll sideways                       <          copy to left
-  Tab        other pane                            u          undo
-                                                   Ctrl-r     redo
+  Move                            Hunks                           Files
+  j k        line down, up        J K        next, previous       w          save
+  Ctrl-d u   half page            ]c [c      next, previous       e          open in $EDITOR
+  gg G       top, bottom          >          copy to right        q          quit
+  ← →        scroll sideways      <          copy to left         Q          quit, don't save
+  Tab        other pane           u          undo                 Ctrl-c     abort, exit 1
+                                  Ctrl-r     redo
   Search
-  / ?        forward, back                         View
-  n N        next, previous                        v          side by side, unified
-  Esc        clear matches                         W          whitespace mode
+  / ?        forward, back        View
+  n N        next, previous       v          switch view
+  Esc        clear matches        W          whitespace mode
 
-  Files
-  w          save
-  e          open in $EDITOR
-  q          quit
-  Q          quit, don't save
+
+
+
+  When whitespace is ignored, whitespace-only changes are hidden and can't be copied.
+
  1/4   whitespace off  LF | LF

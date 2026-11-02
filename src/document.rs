@@ -41,7 +41,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     h
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Document {
     store: Vec<u8>,
     lines: Vec<Span>,

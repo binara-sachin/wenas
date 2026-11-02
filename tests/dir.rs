@@ -79,6 +79,7 @@ fn shell_with(t: &Tree, show_identical: bool, readonly_left: bool, size: (u16, u
         ws: Whitespace::Off,
         readonly_left,
         readonly_right: false,
+        large_file_bytes: wenas::input::LARGE_FILE_BYTES,
     };
     let mut s = Shell::new(dir, opts, size);
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -523,6 +524,7 @@ fn scanning_state_is_shown_while_results_stream_in() {
         ws: Whitespace::Off,
         readonly_left: false,
         readonly_right: false,
+        large_file_bytes: wenas::input::LARGE_FILE_BYTES,
     };
     let mut s = Shell::new(dir, opts, (110, 20));
     assert!(s.polling());
@@ -545,6 +547,7 @@ fn esc_stops_a_running_scan() {
         ws: Whitespace::Off,
         readonly_left: false,
         readonly_right: false,
+        large_file_bytes: wenas::input::LARGE_FILE_BYTES,
     };
     let mut s = Shell::new(dir, opts, (110, 20));
     press(&mut s, KeyCode::Esc);
@@ -603,4 +606,93 @@ fn long_paths_are_clipped_not_overflowing() {
     let v = screen(&mut s, (80, 12));
     assert!(v.contains("…") && v.contains("file.rs"), "{v}");
     assert!(v.lines().all(|l| l.chars().count() <= 80));
+}
+
+fn shell_with_limit(t: &Tree, large_file_bytes: u64) -> Shell {
+    let scan = Scan::spawn(t.left.clone(), t.right.clone(), vec![]);
+    let dir = DirView::new(t.left.clone(), t.right.clone(), false, scan, vec![]);
+    let opts = ShellOptions {
+        theme: theme(),
+        view: ViewConfig::default(),
+        ws: Whitespace::Off,
+        readonly_left: false,
+        readonly_right: false,
+        large_file_bytes,
+    };
+    let mut s = Shell::new(dir, opts, (110, 20));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.dir.scanning {
+        assert!(Instant::now() < deadline);
+        s.tick();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    s
+}
+
+#[test]
+fn large_files_ask_before_they_are_opened_from_the_list() {
+    let t = tree();
+    // Pretend anything over 10 bytes is large: token.rs is 14 bytes per side.
+    let mut s = shell_with_limit(&t, 10);
+    open(&mut s, "src/auth/token.rs");
+    assert!(s.current.is_none());
+    assert!(s.large_pending.is_some());
+    let v = screen(&mut s, (110, 20));
+    assert!(
+        v.contains("src/auth/token.rs is 1 KB")
+            && v.contains("y Open anyway")
+            && v.contains("Esc Cancel"),
+        "{v}"
+    );
+    press(&mut s, KeyCode::Esc);
+    assert!(s.large_pending.is_none() && s.current.is_none());
+    // Small files open without asking, and so does a large one once approved.
+    open(&mut s, "src/auth/session.rs");
+    assert!(s.current.is_some(), "6 bytes is under the limit");
+    press(&mut s, KeyCode::Backspace);
+    open(&mut s, "src/auth/token.rs");
+    key(&mut s, 'y');
+    assert!(s.current.is_some() && s.large_pending.is_none());
+    press(&mut s, KeyCode::Backspace);
+    open(&mut s, "src/auth/token.rs");
+    assert!(
+        s.current.is_some(),
+        "approved files are not asked about again"
+    );
+}
+
+#[test]
+fn binary_entries_are_never_asked_about_because_they_are_not_loaded() {
+    let t = tree();
+    let mut s = shell_with_limit(&t, 1);
+    open(&mut s, "assets/logo.png");
+    assert!(s.current.is_some() && s.large_pending.is_none());
+}
+
+#[test]
+fn unreadable_entries_show_a_bang_and_the_reason() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (l, r) = (tmp.path().join("l"), tmp.path().join("r"));
+    write(&l, "fixtures/server.pem", b"secret");
+    std::fs::create_dir_all(r.join("fixtures")).unwrap();
+    std::os::unix::fs::symlink("/nonexistent/target", r.join("fixtures/server.pem")).unwrap();
+    write(&l, "ok.txt", b"1");
+    write(&r, "ok.txt", b"2");
+    let t = Tree {
+        _tmp: tmp,
+        left: l,
+        right: r,
+    };
+    let mut s = shell(&t);
+    let v = body(&mut s);
+    assert!(
+        v.contains("!  fixtures/server.pem") && v.contains("broken symlink"),
+        "{v}"
+    );
+    assert!(
+        v.contains("M  ok.txt"),
+        "the walk continued past the error:\n{v}"
+    );
+    open(&mut s, "fixtures/server.pem");
+    assert!(s.current.is_none() && s.dir.message_is_error);
 }

@@ -141,7 +141,81 @@ pub struct Theme {
     pub match_fg: Color,
 }
 
+/// Colour names accepted in `[colors]` (same as the `Theme` fields).
+pub const COLOR_NAMES: &[&str] = &[
+    "panel_bg",
+    "dim",
+    "muted",
+    "bright",
+    "amber",
+    "on_amber",
+    "cursor_bg",
+    "changed_bg",
+    "changed_word_bg",
+    "added_bg",
+    "added_word_bg",
+    "removed_bg",
+    "removed_word_bg",
+    "filler",
+    "added_fg",
+    "removed_fg",
+    "changed_fg",
+    "match_bg",
+    "match_fg",
+];
+
+/// `#rrggbb` (the `#` is optional).
+pub fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
+    let h = s.strip_prefix('#').unwrap_or(s);
+    if h.len() != 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = u32::from_str_radix(h, 16).ok()?;
+    Some(((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
+
 impl Theme {
+    /// Override colours by name. Ignored under `NO_COLOR`. Unknown names or bad
+    /// values are skipped (they are reported when the config is parsed).
+    pub fn apply_overrides(
+        &mut self,
+        colors: &std::collections::BTreeMap<String, String>,
+        depth: Depth,
+    ) {
+        if self.no_color {
+            return;
+        }
+        for (name, value) in colors {
+            let Some(rgb) = parse_hex(value) else {
+                continue;
+            };
+            let c = quantize(rgb, depth);
+            let slot = match name.as_str() {
+                "panel_bg" => &mut self.panel_bg,
+                "dim" => &mut self.dim,
+                "muted" => &mut self.muted,
+                "bright" => &mut self.bright,
+                "amber" => &mut self.amber,
+                "on_amber" => &mut self.on_amber,
+                "cursor_bg" => &mut self.cursor_bg,
+                "changed_bg" => &mut self.changed_bg,
+                "changed_word_bg" => &mut self.changed_word_bg,
+                "added_bg" => &mut self.added_bg,
+                "added_word_bg" => &mut self.added_word_bg,
+                "removed_bg" => &mut self.removed_bg,
+                "removed_word_bg" => &mut self.removed_word_bg,
+                "filler" => &mut self.filler,
+                "added_fg" => &mut self.added_fg,
+                "removed_fg" => &mut self.removed_fg,
+                "changed_fg" => &mut self.changed_fg,
+                "match_bg" => &mut self.match_bg,
+                "match_fg" => &mut self.match_fg,
+                _ => continue,
+            };
+            *slot = c;
+        }
+    }
+
     pub fn new(dark: bool, depth: Depth, no_color: bool) -> Theme {
         // (dark, light) pairs; dark values come from the design mockups.
         let c = |d: u32, l: u32| {
@@ -299,6 +373,31 @@ mod tests {
         );
         assert_eq!(quantize((250, 10, 10), Depth::Ansi16), Color::Indexed(9));
         assert_eq!(quantize((1, 2, 3), Depth::True), Color::Rgb(1, 2, 3));
+    }
+
+    #[test]
+    fn colour_overrides_apply_by_name_and_respect_no_color() {
+        let mut o = std::collections::BTreeMap::new();
+        o.insert("changed_bg".to_string(), "#102030".to_string());
+        o.insert("nonsense".to_string(), "#ffffff".to_string());
+        o.insert("amber".to_string(), "not-a-colour".to_string());
+        let mut t = Theme::new(true, Depth::True, false);
+        let amber = t.amber;
+        t.apply_overrides(&o, Depth::True);
+        assert_eq!(t.changed_bg, Color::Rgb(0x10, 0x20, 0x30));
+        assert_eq!(t.amber, amber, "bad values leave the colour alone");
+        let mut t = Theme::new(true, Depth::Ansi256, false);
+        t.apply_overrides(&o, Depth::Ansi256);
+        assert!(
+            matches!(t.changed_bg, Color::Indexed(_)),
+            "overrides follow the colour depth"
+        );
+        let mut t = Theme::new(true, Depth::True, true);
+        t.apply_overrides(&o, Depth::True);
+        assert_eq!(t.changed_bg, Color::Reset);
+        assert_eq!(parse_hex("2a2f3a"), Some((0x2a, 0x2f, 0x3a)));
+        assert_eq!(parse_hex("#12345"), None);
+        assert_eq!(COLOR_NAMES.len(), 19);
     }
 
     #[test]

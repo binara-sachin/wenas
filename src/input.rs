@@ -83,6 +83,55 @@ pub struct Loaded {
     pub source: Source,
 }
 
+/// "148 MB", "1.5 GB" (binary units, one decimal above 1 GB).
+pub fn human_size(bytes: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= 1024.0 * MB {
+        format!("{:.1} GB", b / (1024.0 * MB))
+    } else if b >= MB {
+        format!("{:.0} MB", b / MB)
+    } else {
+        format!("{} KB", bytes.div_ceil(1024).max(1))
+    }
+}
+
+/// How a file's size affects loading it (spec §9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeCheck {
+    Ok,
+    /// Over the "ask first" threshold.
+    Large(u64),
+}
+
+/// Look at a path's size without reading it. Streams (stdin, pipes) are never
+/// checked. Files over `max` are refused outright.
+pub fn check_size(path: &Path, large: u64, max: u64) -> anyhow::Result<SizeCheck> {
+    if path.as_os_str() == "-" {
+        return Ok(SizeCheck::Ok);
+    }
+    let Ok(meta) = std::fs::metadata(path) else {
+        // Missing or unreadable: reading will report it properly.
+        return Ok(SizeCheck::Ok);
+    };
+    if !meta.is_file() {
+        return Ok(SizeCheck::Ok);
+    }
+    if meta.len() > max {
+        anyhow::bail!(
+            "{} is {}, over the {} limit",
+            path.display(),
+            human_size(meta.len()),
+            human_size(max)
+        );
+    }
+    Ok(if meta.len() > large {
+        SizeCheck::Large(meta.len())
+    } else {
+        SizeCheck::Ok
+    })
+}
+
 /// Read a path (or `-` for stdin) fully into memory.
 pub fn read_input(arg: &Path) -> anyhow::Result<Loaded> {
     use anyhow::Context;
@@ -150,6 +199,30 @@ mod tests {
         assert_eq!(first_difference(b"abc", b"abd"), Some(2));
         assert_eq!(first_difference(b"abc", b"ab"), Some(2));
         assert_eq!(first_difference(b"", b"x"), Some(0));
+    }
+
+    #[test]
+    fn size_formatting_and_checks() {
+        assert_eq!(human_size(100), "1 KB");
+        assert_eq!(human_size(150 * 1024 * 1024), "150 MB");
+        assert_eq!(human_size(3 * 512 * 1024 * 1024), "1.5 GB");
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("f");
+        std::fs::write(&f, vec![b'x'; 100]).unwrap();
+        assert_eq!(check_size(&f, 1000, 10_000).unwrap(), SizeCheck::Ok);
+        assert_eq!(check_size(&f, 50, 10_000).unwrap(), SizeCheck::Large(100));
+        assert!(
+            check_size(&f, 10, 50)
+                .unwrap_err()
+                .to_string()
+                .contains("limit")
+        );
+        assert_eq!(check_size(Path::new("-"), 0, 0).unwrap(), SizeCheck::Ok);
+        assert_eq!(
+            check_size(&d.path().join("missing"), 0, 0).unwrap(),
+            SizeCheck::Ok
+        );
+        assert_eq!(check_size(d.path(), 0, 0).unwrap(), SizeCheck::Ok);
     }
 
     #[test]

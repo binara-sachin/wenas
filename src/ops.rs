@@ -66,6 +66,11 @@ pub struct Session {
 impl Session {
     pub fn new(left: Document, right: Document, ws: Whitespace) -> Self {
         let hunks = diff(&left, &right, ws);
+        Self::from_parts(left, right, ws, hunks)
+    }
+
+    /// A session whose diff was already computed (e.g. on a worker thread).
+    pub fn from_parts(left: Document, right: Document, ws: Whitespace, hunks: Vec<Hunk>) -> Self {
         Session {
             left,
             right,

@@ -442,6 +442,8 @@ exclude = [".git", "node_modules", "target"]
 show_identical = false
 ```
 
+Colour names accepted under `[colors]`, each as `#rrggbb`: `panel_bg`, `dim`, `muted`, `bright`, `amber`, `on_amber`, `cursor_bg`, `changed_bg`, `changed_word_bg`, `added_bg`, `added_word_bg`, `removed_bg`, `removed_word_bg`, `filler`, `added_fg`, `removed_fg`, `changed_fg`, `match_bg`, `match_fg`. Unknown names and malformed values warn and are ignored; overrides are ignored under `NO_COLOR` and follow the terminal's colour depth.
+
 Key remapping is planned for a later version.
 
 ## 12. Testing
@@ -521,3 +523,7 @@ CI runs on macOS and Linux.
 | D32 | A symlink opposite a regular file is compared through the link, because `git difftool --dir-diff` presents the working tree as symlinks. Two symlinks are still compared by target; a symlink to a directory is never followed. |
 | D33 | Directory mode waits up to 150 ms for the scan: if it has finished with no differences, print `identical` and exit 0 without opening the UI; otherwise open the list and keep streaming. |
 | D34 | Files opened from the directory list keep their session (edits, undo) when you return to the list. Quit asks once about all of them; "save both" resolves disk conflicts file by file. |
+| D35 | Inputs over 50,000 lines (both sides together) are diffed on a worker thread. After 300 ms the "Comparing…" screen appears; `Esc` leaves (exit 0) and the process exit ends the worker, because `imara-diff` has no cancel hook. Re-diffs after edits and `W` stay synchronous, and a file opened from the directory list is diffed on the UI thread. |
+| D36 | Files over 100 MB are confirmed first: on `[y/N]` at the terminal in file mode, with a panel in the directory view. Declining exits 0 with "skipped". With no terminal to ask on, the file is loaded. Files over 1 GB are refused (exit 2) without asking. |
+| D37 | The help screen uses three columns from 96 columns wide so that, with the editing keys, the whitespace note still fits a 24-row terminal. |
+| D38 | `⏎` marks an unterminated last line on either side. |

@@ -26,6 +26,8 @@ pub struct ShellOptions {
     pub ws: Whitespace,
     pub readonly_left: bool,
     pub readonly_right: bool,
+    /// Ask before loading a file larger than this (spec §9).
+    pub large_file_bytes: u64,
 }
 
 pub struct Shell {
@@ -34,6 +36,9 @@ pub struct Shell {
     pub open: BTreeMap<usize, App>,
     pub current: Option<usize>,
     pub quit_modal: bool,
+    /// An entry waiting for "open it anyway?" because a side is large.
+    pub large_pending: Option<usize>,
+    approved_large: std::collections::HashSet<usize>,
     /// "Save both and quit" is in progress.
     saving_and_quitting: bool,
     pub outcome: Option<Outcome>,
@@ -48,6 +53,8 @@ impl Shell {
             open: BTreeMap::new(),
             current: None,
             quit_modal: false,
+            large_pending: None,
+            approved_large: Default::default(),
             saving_and_quitting: false,
             outcome: None,
             size,
@@ -104,7 +111,7 @@ impl Shell {
                     left_size: sz(&l),
                     right_size: sz(&r),
                     first_difference: Some(*first_diff as usize),
-                    utf16: false,
+                    utf16: has_bom(&l) || has_bom(&r),
                 };
                 App::binary_screen(info, self.opts.theme.clone(), size)
             }
@@ -132,14 +139,13 @@ impl Shell {
                     input::is_binary(&head) || input::has_utf16_bom(&head)
                 };
                 if sniff(&l) || sniff(&r) {
+                    let (lb, rb) = (l.to_bytes(), r.to_bytes());
                     let info = BinaryInfo {
                         name: rel.display().to_string(),
-                        left_size: l.to_bytes().len(),
-                        right_size: r.to_bytes().len(),
-                        first_difference: Some(
-                            input::first_difference(&l.to_bytes(), &r.to_bytes()).unwrap_or(0),
-                        ),
-                        utf16: false,
+                        left_size: lb.len(),
+                        right_size: rb.len(),
+                        first_difference: Some(input::first_difference(&lb, &rb).unwrap_or(0)),
+                        utf16: input::has_utf16_bom(&lb) || input::has_utf16_bom(&rb),
                     };
                     App::binary_screen(info, self.opts.theme.clone(), size)
                 } else {
@@ -159,7 +165,47 @@ impl Shell {
         Ok(app)
     }
 
+    /// The largest side of an entry that would be loaded into memory.
+    fn load_size(&self, idx: usize) -> Result<u64, String> {
+        let e = &self.dir.entries[idx];
+        if matches!(
+            e.status,
+            Status::Binary { .. }
+                | Status::Mismatch(_)
+                | Status::Error(_)
+                | Status::SymlinkDiffers { .. }
+        ) {
+            return Ok(0); // never loaded
+        }
+        let mut biggest = 0;
+        for base in [&self.dir.left, &self.dir.right] {
+            let p = base.join(&e.rel);
+            match input::check_size(&p, 0, input::MAX_FILE_BYTES) {
+                Ok(input::SizeCheck::Large(n)) => biggest = biggest.max(n),
+                Ok(input::SizeCheck::Ok) => {
+                    biggest = biggest.max(std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0));
+                }
+                Err(e) => return Err(format!("{e:#}")),
+            }
+        }
+        Ok(biggest)
+    }
+
     fn open_entry(&mut self, idx: usize) {
+        if !self.open.contains_key(&idx) && !self.approved_large.contains(&idx) {
+            match self.load_size(idx) {
+                Ok(n) if n > self.opts.large_file_bytes => {
+                    self.large_pending = Some(idx);
+                    return;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    self.dir.message = Some(e);
+                    self.dir.message_is_error = true;
+                    return;
+                }
+            }
+        }
         if !self.open.contains_key(&idx) {
             match self.build_app(idx) {
                 Ok(app) => {
@@ -312,7 +358,15 @@ impl Ui for Shell {
         }
         self.sync_unsaved();
         draw_dir(f.buffer_mut(), &mut self.dir, &self.opts.theme, area);
-        if self.quit_modal {
+        if let Some(idx) = self.large_pending {
+            let size = self.load_size(idx).unwrap_or(0);
+            let text = ModalText {
+                title: format!("{} is {}", self.rel_label(idx), input::human_size(size)),
+                body: vec!["Loading it may be slow and use a lot of memory.".into()],
+                hints: vec![("y", "Open anyway"), ("Esc", "Cancel")],
+            };
+            render::draw_modal_panel(f.buffer_mut(), &self.opts.theme, area, &text);
+        } else if self.quit_modal {
             let text = self.quit_text();
             render::draw_modal_panel(f.buffer_mut(), &self.opts.theme, area, &text);
         }
@@ -324,6 +378,18 @@ impl Ui for Shell {
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.outcome = Some(Outcome::Abort);
+            return;
+        }
+        if let Some(idx) = self.large_pending {
+            match key.code {
+                KeyCode::Char('y') => {
+                    self.large_pending = None;
+                    self.approved_large.insert(idx);
+                    self.open_entry(idx);
+                }
+                KeyCode::Esc | KeyCode::Char('n') => self.large_pending = None,
+                _ => {}
+            }
             return;
         }
         if self.quit_modal {
@@ -369,4 +435,14 @@ impl Ui for Shell {
             app.finish_editor(side, result);
         }
     }
+}
+
+/// Does the file start with a UTF-16 byte-order mark?
+fn has_bom(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 2];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .is_ok()
+        && input::has_utf16_bom(&head)
 }

@@ -2,6 +2,8 @@ use clap::Parser;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use wenas::cli::{Cli, GIT_CONFIG};
 use wenas::config;
 use wenas::diff::diff;
@@ -12,6 +14,7 @@ use wenas::ops::Session;
 use wenas::save::document_from_loaded;
 use wenas::theme::{Depth, Theme, resolve_dark};
 use wenas::ui::dir::DirView;
+use wenas::ui::loading::Loading;
 use wenas::ui::shell::{Shell, ShellOptions};
 use wenas::ui::term::Ui;
 use wenas::ui::term::{TerminalGuard, run_loop, terminal_size};
@@ -63,6 +66,10 @@ fn run(cli: &Cli) -> anyhow::Result<u8> {
     }
     let cfg = config::load(cli.config.as_deref())?;
 
+    if !confirm_large_files(&[left, right])? {
+        eprintln!("wenas: skipped");
+        return Ok(EXIT_OK);
+    }
     let (ll, rl) = (read_input(left)?, read_input(right)?);
     let is_bin = |b: &[u8]| input::is_binary(b) || input::has_utf16_bom(b);
     if is_bin(&ll.bytes) || is_bin(&rl.bytes) {
@@ -101,6 +108,43 @@ fn run(cli: &Cli) -> anyhow::Result<u8> {
         cfg.whitespace.into()
     };
 
+    let view_cfg = ViewConfig {
+        tab_width: cfg.tab_width,
+        unified_below_columns: cfg.unified_below_columns,
+        force_unified: cli.unified,
+    };
+
+    // Small inputs diff inline (microseconds). Large ones run on a worker thread
+    // so the screen can show progress and `Esc` can cancel (spec §10).
+    if l.len() + r.len() > BACKGROUND_DIFF_LINES && std::io::stdout().is_terminal() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (lc, rc) = (l.clone(), r.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(diff(&lc, &rc, ws));
+        });
+        let hunks = match rx.recv_timeout(std::time::Duration::from_millis(300)) {
+            Ok(h) => h,
+            Err(_) => {
+                let identical = Arc::new(AtomicBool::new(false));
+                let flag = identical.clone();
+                let code = interactive(&cfg, move |theme, size| {
+                    Loading::new(rx, (l, r), ws, theme, view_cfg, size, flag)
+                })?;
+                if identical.load(Ordering::Relaxed) {
+                    println!("identical");
+                }
+                return Ok(code);
+            }
+        };
+        if hunks.is_empty() {
+            println!("identical");
+            return Ok(EXIT_OK);
+        }
+        return interactive(&cfg, move |theme, size| {
+            App::new(Session::from_parts(l, r, ws, hunks), theme, view_cfg, size)
+        });
+    }
+
     // No hunks (identical, or only line-ending/ignored-whitespace differences)
     // never opens the UI.
     if diff(&l, &r, ws).is_empty() {
@@ -108,15 +152,13 @@ fn run(cli: &Cli) -> anyhow::Result<u8> {
         return Ok(EXIT_OK);
     }
     require_terminal()?;
-    let view_cfg = ViewConfig {
-        tab_width: cfg.tab_width,
-        unified_below_columns: cfg.unified_below_columns,
-        force_unified: cli.unified,
-    };
     interactive(&cfg, move |theme, size| {
         App::new(Session::new(l, r, ws), theme, view_cfg, size)
     })
 }
+
+/// Above this many lines (both sides together) the first diff runs in the background.
+const BACKGROUND_DIFF_LINES: usize = 50_000;
 
 fn display_name(path: &Path, label: Option<&str>) -> String {
     label
@@ -133,7 +175,9 @@ fn interactive<U: Ui>(
     // The OSC 11 query must run in raw mode but before the alternate screen.
     let dark = resolve_dark(cfg.theme);
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
-    let theme = Theme::new(dark, Depth::detect(), no_color);
+    let depth = Depth::detect();
+    let mut theme = Theme::new(dark, depth, no_color);
+    theme.apply_overrides(&cfg.colors, depth);
     let mut terminal = guard.enter_screen()?;
     let mut app = build(theme, terminal_size());
     let outcome = run_loop(&mut terminal, &mut app);
@@ -194,7 +238,54 @@ fn run_dir(cli: &Cli, left: &Path, right: &Path) -> anyhow::Result<u8> {
             ws,
             readonly_left: ro_l,
             readonly_right: ro_r,
+            large_file_bytes: input::LARGE_FILE_BYTES,
         };
         Shell::new(dir, opts, size)
     })
+}
+
+/// Ask before loading anything over 100 MB (spec §9). Files over 1 GB are
+/// refused outright. Returns false when the user declines.
+fn confirm_large_files(paths: &[&Path]) -> anyhow::Result<bool> {
+    let mut large = Vec::new();
+    for p in paths {
+        if let input::SizeCheck::Large(n) =
+            input::check_size(p, input::LARGE_FILE_BYTES, input::MAX_FILE_BYTES)?
+        {
+            large.push((p, n));
+        }
+    }
+    if large.is_empty() {
+        return Ok(true);
+    }
+    if !std::io::stdout().is_terminal() {
+        // Nothing to ask and nothing to show; scripts get the plain behaviour.
+        return Ok(true);
+    }
+    let list: Vec<String> = large
+        .iter()
+        .map(|(p, n)| format!("{} ({})", p.display(), input::human_size(*n)))
+        .collect();
+    let prompt = format!(
+        "wenas: {} is large; loading may be slow. Load it anyway? [y/N] ",
+        list.join(", ")
+    );
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "{} is large and there is no terminal to ask on",
+                list.join(", ")
+            )
+        })?;
+    use std::io::{BufRead, Write};
+    tty.write_all(prompt.as_bytes())?;
+    let mut answer = String::new();
+    std::io::BufReader::new(&tty).read_line(&mut answer)?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }

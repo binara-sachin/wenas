@@ -23,52 +23,89 @@ struct Cell {
 }
 
 /// Expand tabs, escape invalid UTF-8 as `\xNN`, replace control characters.
-/// Zero-width characters are dropped.
-fn build_cells(line: &[u8], tab: usize) -> Vec<Cell> {
-    let mut cells = Vec::with_capacity(line.len());
-    let (mut col, mut off) = (0usize, 0usize);
-    for chunk in line.utf8_chunks() {
-        let valid = chunk.valid();
-        for (i, ch) in valid.char_indices() {
-            let byte = off + i;
-            if ch == '\t' {
-                for _ in 0..(tab - col % tab) {
-                    cells.push(Cell {
-                        ch: ' ',
-                        w: 1,
-                        byte,
-                    });
-                    col += 1;
-                }
-            } else if ch.is_control() {
-                cells.push(Cell {
-                    ch: '·',
-                    w: 1,
-                    byte,
-                });
-                col += 1;
-            } else {
-                let w = ch.width().unwrap_or(0);
-                if w > 0 {
-                    cells.push(Cell { ch, w, byte });
-                    col += w;
-                }
-            }
-        }
-        off += valid.len();
-        for &b in chunk.invalid() {
-            for ch in format!("\\x{b:02X}").chars() {
-                cells.push(Cell {
-                    ch,
-                    w: 1,
-                    byte: off,
-                });
-                col += 1;
-            }
-            off += 1;
+/// Zero-width characters are dropped. Lazy, so drawing a 1 MB line only pays
+/// for the part that reaches the screen.
+struct Cells<'a> {
+    chunks: std::str::Utf8Chunks<'a>,
+    valid: std::str::CharIndices<'a>,
+    invalid: std::slice::Iter<'a, u8>,
+    /// Byte offset where the current chunk starts.
+    chunk_start: usize,
+    valid_len: usize,
+    invalid_len: usize,
+    invalid_seen: usize,
+    col: usize,
+    tab: usize,
+    pending: std::collections::VecDeque<Cell>,
+}
+
+impl<'a> Cells<'a> {
+    fn new(line: &'a [u8], tab: usize) -> Self {
+        Cells {
+            chunks: line.utf8_chunks(),
+            valid: "".char_indices(),
+            invalid: [].iter(),
+            chunk_start: 0,
+            valid_len: 0,
+            invalid_len: 0,
+            invalid_seen: 0,
+            col: 0,
+            tab: tab.max(1),
+            pending: Default::default(),
         }
     }
-    cells
+
+    fn push(&mut self, ch: char, w: usize, byte: usize) {
+        self.pending.push_back(Cell { ch, w, byte });
+        self.col += w;
+    }
+}
+
+impl Iterator for Cells<'_> {
+    type Item = Cell;
+
+    fn next(&mut self) -> Option<Cell> {
+        loop {
+            if let Some(c) = self.pending.pop_front() {
+                return Some(c);
+            }
+            if let Some((i, ch)) = self.valid.next() {
+                let byte = self.chunk_start + i;
+                if ch == '\t' {
+                    for _ in 0..(self.tab - self.col % self.tab) {
+                        self.push(' ', 1, byte);
+                    }
+                } else if ch.is_control() {
+                    self.push('·', 1, byte);
+                } else {
+                    let w = ch.width().unwrap_or(0);
+                    if w > 0 {
+                        self.push(ch, w, byte);
+                    }
+                }
+                continue;
+            }
+            if let Some(&b) = self.invalid.next() {
+                let byte = self.chunk_start + self.valid_len + self.invalid_seen;
+                self.invalid_seen += 1;
+                for ch in format!("\\x{b:02X}").chars() {
+                    self.push(ch, 1, byte);
+                }
+                continue;
+            }
+            self.chunk_start += self.valid_len + self.invalid_len;
+            let chunk = self.chunks.next()?;
+            self.valid_len = chunk.valid().len();
+            self.invalid_len = chunk.invalid().len();
+            self.invalid_seen = 0;
+            self.valid = chunk.valid().char_indices();
+            self.invalid = chunk.invalid().iter();
+        }
+    }
+}
+
+fn build_cells(line: &[u8], tab: usize) -> Vec<Cell> {
+    Cells::new(line, tab).collect()
 }
 
 pub fn display_width(line: &[u8], tab: usize) -> usize {
@@ -148,6 +185,7 @@ fn draw_text(
     word: Style,
     ranges: &[Range<usize>],
     matches: &[(Range<usize>, bool)],
+    no_eol: bool,
 ) {
     if width == 0 {
         return;
@@ -157,7 +195,7 @@ fn draw_text(
     let mut col = 0usize;
     let mut more = false;
     let mut tmp = [0u8; 4];
-    for c in build_cells(line, app.cfg.tab_width) {
+    for c in Cells::new(line, app.cfg.tab_width) {
         let start = col;
         col += c.w;
         if col <= hscroll {
@@ -191,6 +229,11 @@ fn draw_text(
             c.w.max(1),
             style,
         );
+    }
+    // `⏎` marks a last line with no newline (spec §10).
+    if no_eol && !more && col >= hscroll && col - hscroll < width {
+        let style = if t.no_color { base } else { base.fg(t.dim) };
+        buf.set_stringn(x + (col - hscroll) as u16, y, "⏎", 1, style);
     }
     if more {
         let style = base.fg(t.amber);
@@ -538,7 +581,8 @@ fn draw_side_row(buf: &mut Buffer, fr: &Frame1, area: Rect, y: u16, ri: usize, r
                 } else {
                     &[]
                 };
-                draw_text(buf, tx, y, tw, text, app, base, word, rs, &ms);
+                let no_eol = app.session.doc(side).eol_of(li).is_none();
+                draw_text(buf, tx, y, tw, text, app, base, word, rs, &ms, no_eol);
             }
         }
     }
@@ -589,6 +633,7 @@ fn draw_unified_row(buf: &mut Buffer, fr: &Frame1, area: Rect, y: u16, ri: usize
         word,
         rs,
         &ms,
+        app.session.doc(side).eol_of(li).is_none(),
     );
 }
 
@@ -870,10 +915,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Esc", "clear matches"),
         ],
     ),
-    (
-        "View",
-        &[("v", "side by side, unified"), ("W", "whitespace mode")],
-    ),
+    ("View", &[("v", "switch view"), ("W", "whitespace mode")]),
     (
         "Files",
         &[
@@ -888,11 +930,17 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
 
 fn draw_help(buf: &mut Buffer, app: &App, area: Rect) {
     let t = &app.theme;
-    let cols = if area.width >= 90 { 2 } else { 1 };
+    // Sections: Move, Hunks, Search, View, Files. Three columns as in the mockup
+    // keep everything, and the whitespace note, on a 24-row terminal.
+    let (cols, layout): (usize, [usize; 5]) = match area.width {
+        96.. => (3, [0, 1, 0, 1, 2]),
+        64..=95 => (2, [0, 1, 0, 1, 1]),
+        _ => (1, [0; 5]),
+    };
     let col_w = (area.width as usize - 2) / cols;
     let mut ys = vec![2u16; cols];
     for (i, (title, items)) in HELP.iter().enumerate() {
-        let c = i % cols;
+        let c = layout[i];
         let x0 = 2 + (c * col_w) as u16;
         let y = &mut ys[c];
         if *y + 1 >= area.height - 1 {

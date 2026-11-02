@@ -46,6 +46,8 @@ pub struct Config {
     pub tab_width: usize,
     pub whitespace: WhitespaceSetting,
     pub unified_below_columns: u16,
+    /// Colour overrides by name, as `#rrggbb`.
+    pub colors: std::collections::BTreeMap<String, String>,
     pub directory: DirectoryConfig,
 }
 
@@ -56,6 +58,7 @@ impl Default for Config {
             tab_width: 4,
             whitespace: WhitespaceSetting::Off,
             unified_below_columns: 100,
+            colors: Default::default(),
             directory: DirectoryConfig::default(),
         }
     }
@@ -84,6 +87,20 @@ pub fn parse(text: &str) -> Result<(Config, Vec<String>), String> {
         .collect();
     let mut cfg: Config = table.try_into().map_err(|e| format!("{e}"))?;
     cfg.tab_width = cfg.tab_width.clamp(1, 16);
+    let mut warnings: Vec<String> = warnings;
+    cfg.colors.retain(|name, value| {
+        if !crate::theme::COLOR_NAMES.contains(&name.as_str()) {
+            warnings.push(format!("unknown colour `{name}` ignored"));
+            false
+        } else if crate::theme::parse_hex(value).is_none() {
+            warnings.push(format!(
+                "colour `{name}` must look like \"#rrggbb\"; ignored"
+            ));
+            false
+        } else {
+            true
+        }
+    });
     Ok((cfg, warnings))
 }
 
@@ -140,6 +157,16 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert!(w[0].contains("bogus"));
         assert_eq!(c.tab_width, 4);
+    }
+
+    #[test]
+    fn colour_overrides_are_validated() {
+        let (c, w) =
+            parse("[colors]\nchanged_bg = \"#2a2f3a\"\nnope = \"#ffffff\"\namber = \"red\"\n")
+                .unwrap();
+        assert_eq!(c.colors.len(), 1);
+        assert_eq!(c.colors["changed_bg"], "#2a2f3a");
+        assert_eq!(w.len(), 2, "{w:?}");
     }
 
     #[test]

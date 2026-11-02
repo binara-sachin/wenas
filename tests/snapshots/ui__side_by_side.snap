@@ -21,4 +21,4 @@ expression: "text(&mut app((100, 20)))"
 
 
 
- 1/4   whitespace off  LF | LF                                        J K hunks  v unified  F1 help
+ 1/4   whitespace off  LF | LF                                     > copy to right  u undo  F1 help

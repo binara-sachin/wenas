@@ -7,18 +7,18 @@ expression: text(&mut a)
   Move                                             Hunks
   j k        line down, up                         J K        next, previous
   Ctrl-d u   half page                             ]c [c      next, previous
-  gg G       top, bottom
-  ← →        scroll sideways                       View
-  Tab        other pane                            v          side by side, unified
-                                                   W          whitespace mode
+  gg G       top, bottom                           >          copy to right
+  ← →        scroll sideways                       <          copy to left
+  Tab        other pane                            u          undo
+                                                   Ctrl-r     redo
   Search
-  / ?        forward, back
-  n N        next, previous
-  Esc        clear matches
+  / ?        forward, back                         View
+  n N        next, previous                        v          side by side, unified
+  Esc        clear matches                         W          whitespace mode
 
   Files
-  q Q        quit
-  Ctrl-c     abort, exit 1
-
-
+  w          save
+  e          open in $EDITOR
+  q          quit
+  Q          quit, don't save
  1/4   whitespace off  LF | LF

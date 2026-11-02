@@ -61,3 +61,22 @@ fn whitespace_only_difference_is_identical_under_w() {
     std::fs::write(&b, "a  b\n").unwrap();
     wenas().arg("-b").arg(&a).arg(&b).assert().success();
 }
+
+#[test]
+fn git_config_sets_trust_exit_code_where_git_reads_it() {
+    // git ignores trustExitCode under [difftool "<tool>"]; it must be in [difftool].
+    let out = wenas().arg("--git-config").output().unwrap().stdout;
+    let text = String::from_utf8(out).unwrap();
+    let difftool = text.split("[difftool \"wenas\"]").next().unwrap();
+    assert!(
+        difftool.contains("[difftool]") && difftool.contains("trustExitCode = true"),
+        "{text}"
+    );
+    assert!(
+        !text
+            .split("[difftool \"wenas\"]")
+            .nth(1)
+            .unwrap()
+            .contains("trustExitCode")
+    );
+}

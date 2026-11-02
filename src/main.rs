@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use wenas::cli::{Cli, GIT_CONFIG};
 use wenas::config;
 use wenas::diff::diff;
+use wenas::gitenv::is_git_temp;
 use wenas::input::{self, read_input};
 use wenas::ops::Session;
 use wenas::save::document_from_loaded;
@@ -80,8 +81,22 @@ fn run(cli: &Cli) -> anyhow::Result<u8> {
     let mut r = document_from_loaded(rl, Some(right));
     l.label = cli.label_left.clone();
     r.label = cli.label_right.clone();
-    l.readonly |= cli.readonly_left;
-    r.readonly |= cli.readonly_right;
+    for (doc, path, flag, flag_name) in [
+        (&mut l, left, cli.readonly_left, "--readonly-left"),
+        (&mut r, right, cli.readonly_right, "--readonly-right"),
+    ] {
+        if is_git_temp(path) {
+            doc.readonly = true;
+            doc.readonly_note = Some("git's old version");
+        } else if flag {
+            doc.readonly = true;
+            doc.readonly_note = Some(if flag_name == "--readonly-left" {
+                "marked --readonly-left"
+            } else {
+                "marked --readonly-right"
+            });
+        }
+    }
     let ws = if cli.ignore_all_space || cli.ignore_space_change {
         cli.whitespace()
     } else {

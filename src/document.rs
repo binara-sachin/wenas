@@ -48,6 +48,8 @@ pub struct Document {
     pub path: Option<PathBuf>,
     pub label: Option<String>,
     pub readonly: bool,
+    /// Why the side is read-only, for the refusal message (e.g. "git's old version").
+    pub readonly_note: Option<&'static str>,
     pub disk: Option<DiskId>,
     /// Identifies the current content; equal to `saved_state` means "clean".
     pub(crate) state: u64,
@@ -78,6 +80,7 @@ impl Document {
             path: None,
             label: None,
             readonly: false,
+            readonly_note: None,
             disk: None,
             state: 0,
             saved_state: 0,
@@ -172,6 +175,29 @@ impl Document {
         self.lines.splice(range, new.iter().copied()).collect()
     }
 
+    /// Replace the entire content. The old spans stay valid (the store is
+    /// append-only), so the swap can be undone. Returns `(old, new)` spans.
+    pub fn replace_all(&mut self, bytes: &[u8]) -> (Vec<Span>, Vec<Span>) {
+        let base = self.append(bytes).start as usize;
+        let mut new = Vec::new();
+        let mut start = 0usize;
+        for nl in memchr::memchr_iter(b'\n', bytes) {
+            new.push(Span {
+                start: (base + start) as u32,
+                end: (base + nl + 1) as u32,
+            });
+            start = nl + 1;
+        }
+        if start < bytes.len() {
+            new.push(Span {
+                start: (base + start) as u32,
+                end: (base + bytes.len()) as u32,
+            });
+        }
+        let old = std::mem::replace(&mut self.lines, new.clone());
+        (old, new)
+    }
+
     /// The whole file, as it would be written.
     pub fn to_bytes(&self) -> Vec<u8> {
         let total: usize = self.lines.iter().map(|s| (s.end - s.start) as usize).sum();
@@ -230,6 +256,16 @@ mod tests {
         assert_eq!(d.line(2), b"c");
         assert_eq!(d.style(), EolStyle::Mixed);
         assert!(d.missing_final_newline());
+    }
+
+    #[test]
+    fn replace_all_keeps_old_spans_valid() {
+        let mut d = Document::from_bytes(b"a\nb\n".to_vec());
+        let (old, new) = d.replace_all(b"x\ny\nz");
+        assert_eq!(d.to_bytes(), b"x\ny\nz");
+        assert_eq!((old.len(), new.len()), (2, 3));
+        d.splice(0..3, &old);
+        assert_eq!(d.to_bytes(), b"a\nb\n");
     }
 
     #[test]

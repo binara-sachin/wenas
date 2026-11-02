@@ -1,7 +1,7 @@
 //! Editing session: hunk copy, undo/redo (spec §5.3, §7.3).
 
 use crate::diff::{Hunk, Whitespace, diff};
-use crate::document::{Document, Span};
+use crate::document::{DiskId, Document, Span};
 use crate::save::{self, SaveError};
 use std::fmt;
 
@@ -34,6 +34,13 @@ impl fmt::Display for OpError {
     }
 }
 impl std::error::Error for OpError {}
+
+/// Where an undo or redo landed, so the UI can move the cursor there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditLoc {
+    pub side: Side,
+    pub start: usize,
+}
 
 /// One undoable change: `old` spans at `start` were replaced by `new`.
 #[derive(Debug, Clone)]
@@ -166,27 +173,74 @@ impl Session {
         Ok(())
     }
 
-    /// Undo the most recent edit. Returns the side it touched.
-    pub fn undo(&mut self) -> Option<Side> {
+    /// Undo the most recent edit.
+    pub fn undo(&mut self) -> Option<EditLoc> {
         let e = self.undo.pop()?;
         let doc = self.doc_mut(e.side);
         doc.splice(e.start..e.start + e.new.len(), &e.old);
         doc.state = e.state_before;
-        let side = e.side;
+        let loc = EditLoc {
+            side: e.side,
+            start: e.start,
+        };
         self.redo.push(e);
         self.rediff();
-        Some(side)
+        Some(loc)
     }
 
-    pub fn redo(&mut self) -> Option<Side> {
+    pub fn redo(&mut self) -> Option<EditLoc> {
         let e = self.redo.pop()?;
         let doc = self.doc_mut(e.side);
         doc.splice(e.start..e.start + e.old.len(), &e.new);
         doc.state = e.state_after;
-        let side = e.side;
+        let loc = EditLoc {
+            side: e.side,
+            start: e.start,
+        };
         self.undo.push(e);
         self.rediff();
-        Some(side)
+        Some(loc)
+    }
+
+    /// Number of undoable steps that touched `side`.
+    pub fn edit_count(&self, side: Side) -> usize {
+        self.undo.iter().filter(|e| e.side == side).count()
+    }
+
+    /// Sides with unsaved changes.
+    pub fn dirty_sides(&self) -> Vec<Side> {
+        [Side::Left, Side::Right]
+            .into_iter()
+            .filter(|&s| self.doc(s).is_dirty())
+            .collect()
+    }
+
+    /// Swap a side's whole content for `bytes` just read from disk (after an
+    /// `$EDITOR` trip, or a reload). One undo step; the side is clean afterwards,
+    /// and undoing makes it dirty again. Returns false if nothing changed.
+    pub fn replace_content(&mut self, side: Side, bytes: &[u8], disk: DiskId) -> bool {
+        let state_after = self.next_state;
+        let doc = self.doc_mut(side);
+        doc.disk = Some(disk);
+        if doc.to_bytes() == bytes {
+            return false;
+        }
+        let state_before = doc.state;
+        let (old, new) = doc.replace_all(bytes);
+        doc.state = state_after;
+        doc.saved_state = state_after;
+        self.next_state += 1;
+        self.undo.push(Edit {
+            side,
+            start: 0,
+            old,
+            new,
+            state_before,
+            state_after,
+        });
+        self.redo.clear();
+        self.rediff();
+        true
     }
 
     pub fn save(&mut self, side: Side, force: bool) -> Result<(), SaveError> {
@@ -263,6 +317,49 @@ mod tests {
         let mut s = session("x", "x\ny\n");
         s.copy_hunk(0, Dir::LeftToRight).unwrap();
         assert!(s.hunks.is_empty());
+    }
+
+    #[test]
+    fn replace_content_is_one_clean_undoable_step() {
+        let mut s = session("a\nb\n", "a\nX\n");
+        assert!(s.replace_content(
+            Side::Right,
+            b"a\nb\nc\n",
+            DiskId::of_bytes(b"a\nb\nc\n", None)
+        ));
+        assert!(
+            !s.right.is_dirty(),
+            "content came from disk, so it is clean"
+        );
+        assert_eq!(s.hunks.len(), 1);
+        assert_eq!(s.edit_count(Side::Right), 1);
+        s.undo();
+        assert_eq!(s.right.to_bytes(), b"a\nX\n");
+        assert!(s.right.is_dirty(), "undoing leaves it different from disk");
+        s.redo();
+        assert!(!s.right.is_dirty());
+        assert!(!s.replace_content(Side::Right, b"a\nb\nc\n", DiskId::of_bytes(b"", None)));
+    }
+
+    #[test]
+    fn undo_reports_where_it_landed() {
+        let mut s = session("1\n2\n3\n", "1\nx\n3\n");
+        s.copy_hunk(0, Dir::LeftToRight).unwrap();
+        assert_eq!(
+            s.undo(),
+            Some(EditLoc {
+                side: Side::Right,
+                start: 1
+            })
+        );
+        assert_eq!(
+            s.redo(),
+            Some(EditLoc {
+                side: Side::Right,
+                start: 1
+            })
+        );
+        assert_eq!(s.dirty_sides(), vec![Side::Right]);
     }
 
     #[test]

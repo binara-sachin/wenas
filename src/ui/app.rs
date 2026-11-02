@@ -1,9 +1,11 @@
 //! View state and key handling. Rendering lives in `render`.
 
 use crate::align::{self, Row, RowKind};
+use crate::document::DiskId;
 use crate::inline::{Inline, inline_diff};
 use crate::input::EolStyle;
-use crate::ops::{Session, Side};
+use crate::ops::{Dir, EditLoc, OpError, Session, Side};
+use crate::save::SaveError;
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::HashMap;
@@ -51,6 +53,32 @@ pub struct BinaryInfo {
     pub utf16: bool,
 }
 
+/// A question that takes over the bottom of the screen until answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modal {
+    /// The file changed on disk since it was opened (spec §7.4).
+    ChangedOnDisk { side: Side, quit_after: bool },
+    /// `q` with unsaved changes.
+    QuitUnsaved,
+    /// `e` on a side with unsaved changes (spec §7.3).
+    SaveFirst { side: Side },
+}
+
+/// What the event loop must do outside the UI: run `$EDITOR`, then call `finish_editor`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorRequest {
+    pub side: Side,
+    pub line: usize,
+    pub path: std::path::PathBuf,
+}
+
+/// Text for the bottom panel of a modal.
+pub struct ModalText {
+    pub title: String,
+    pub body: Vec<String>,
+    pub hints: Vec<(&'static str, &'static str)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
     pub row: usize,
@@ -91,6 +119,9 @@ pub struct App {
     pub prompt: Option<Prompt>,
     pub help: bool,
     pub message: Option<String>,
+    pub message_is_error: bool,
+    pub modal: Option<Modal>,
+    pub editor_request: Option<EditorRequest>,
     pub outcome: Option<Outcome>,
     pub eols: (EolStyle, EolStyle),
     pending: Option<char>,
@@ -120,6 +151,9 @@ impl App {
             prompt: None,
             help: false,
             message: None,
+            message_is_error: false,
+            modal: None,
+            editor_request: None,
             outcome: None,
             eols: (EolStyle::None, EolStyle::None),
             pending: None,
@@ -475,6 +509,7 @@ impl App {
             return;
         }
         self.message = None;
+        self.message_is_error = false;
         if self.binary.is_some() {
             if matches!(
                 key.code,
@@ -482,6 +517,10 @@ impl App {
             ) {
                 self.outcome = Some(Outcome::Quit);
             }
+            return;
+        }
+        if self.modal.is_some() {
+            self.on_modal_key(key);
             return;
         }
         if self.help {
@@ -506,7 +545,7 @@ impl App {
         match key.code {
             KeyCode::Char('d') if ctrl => self.half_page(true),
             KeyCode::Char('u') if ctrl => self.half_page(false),
-            KeyCode::Char('r') if ctrl => self.not_yet("redo"),
+            KeyCode::Char('r') if ctrl => self.redo(),
             KeyCode::Char('j') | KeyCode::Down => self.move_cursor(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_cursor(-1),
             KeyCode::Char('G') => {
@@ -558,13 +597,13 @@ impl App {
                 self.rebuild(anchor);
                 self.message = Some(format!("whitespace: {}", ws.label()));
             }
-            KeyCode::Char('>') => self.not_yet("copy to right"),
-            KeyCode::Char('<') => self.not_yet("copy to left"),
-            KeyCode::Char('u') => self.not_yet("undo"),
-            KeyCode::Char('e') => self.not_yet("opening $EDITOR"),
-            KeyCode::Char('w') => self.not_yet("saving"),
-            KeyCode::Char('q') => self.quit(false),
-            KeyCode::Char('Q') => self.quit(true),
+            KeyCode::Char('>') => self.copy(Dir::LeftToRight),
+            KeyCode::Char('<') => self.copy(Dir::RightToLeft),
+            KeyCode::Char('u') => self.undo(),
+            KeyCode::Char('e') => self.request_editor(),
+            KeyCode::Char('w') => self.save_all(false),
+            KeyCode::Char('q') => self.quit(),
+            KeyCode::Char('Q') => self.outcome = Some(Outcome::Quit),
             KeyCode::Esc => self.clear_search(),
             KeyCode::F(1) => self.help = true,
             _ => {}
@@ -576,15 +615,335 @@ impl App {
         self.top = 0;
     }
 
-    fn not_yet(&mut self, what: &str) {
-        self.message = Some(format!(
-            "{what} arrives with editing support (milestone M3)"
-        ));
+    fn error(&mut self, msg: impl Into<String>) {
+        self.message = Some(msg.into());
+        self.message_is_error = true;
     }
 
-    fn quit(&mut self, _force: bool) {
-        // Nothing can be modified yet, so there is never anything to confirm.
-        self.outcome = Some(Outcome::Quit);
+    pub fn side_name(&self, side: Side) -> String {
+        crate::ui::render::side_name(self, side)
+    }
+
+    // ---- editing ----
+
+    /// Copy the current hunk across (`>` or `<`).
+    fn copy(&mut self, dir: Dir) {
+        let Some(h) = self.current_hunk() else {
+            self.message = Some("no hunk to copy".into());
+            return;
+        };
+        let src = if dir == Dir::LeftToRight {
+            Side::Left
+        } else {
+            Side::Right
+        };
+        // Anchor on the side we are not changing, so the cursor stays put.
+        let anchor = self
+            .rows
+            .get(self.cursor)
+            .map(|r| match (src, r.left, r.right) {
+                (Side::Left, Some(l), _) => (Some(l), None),
+                (Side::Right, _, Some(rr)) => (None, Some(rr)),
+                _ => (r.left, r.right),
+            });
+        match self.session.copy_hunk(h, dir) {
+            Ok(()) => {
+                self.rebuild(anchor);
+                let to = if dir == Dir::LeftToRight {
+                    "right"
+                } else {
+                    "left"
+                };
+                self.message = Some(format!("hunk {} copied to {to}", h + 1));
+            }
+            Err(OpError::ReadOnly(side)) => {
+                let (name, other_key, other_name) = match side {
+                    Side::Left => ("left", '>', "right"),
+                    Side::Right => ("right", '<', "left"),
+                };
+                let other = if side == Side::Left {
+                    Side::Right
+                } else {
+                    Side::Left
+                };
+                let mut msg = format!("The {name} side {} read-only.", self.readonly_reason(side));
+                if !self.session.doc(other).readonly {
+                    msg.push_str(&format!(" Press {other_key} to copy {other_name} instead."));
+                }
+                self.error(msg);
+            }
+            Err(OpError::NoSuchHunk) => self.message = Some("no hunk to copy".into()),
+        }
+    }
+
+    /// "is git's old version, so it's" or just "is", to precede "read-only".
+    fn readonly_reason(&self, side: Side) -> String {
+        match self.session.doc(side).readonly_note {
+            Some(n) => format!("is {n}, so it's"),
+            None => "is".into(),
+        }
+    }
+
+    fn jump_to_line(&mut self, loc: EditLoc) {
+        let pos = self.rows.iter().position(|r| {
+            if loc.side == Side::Left {
+                r.left
+            } else {
+                r.right
+            }
+            .is_some_and(|x| x >= loc.start)
+        });
+        if let Some(i) = pos {
+            let h = self.content_height();
+            self.cursor = i;
+            if i < self.top || i >= self.top + h {
+                self.top = i.saturating_sub(h / 2);
+            }
+        }
+    }
+
+    fn undo(&mut self) {
+        let anchor = self.anchor();
+        match self.session.undo() {
+            Some(loc) => {
+                self.rebuild(anchor);
+                self.jump_to_line(loc);
+                self.message = Some("undone".into());
+            }
+            None => self.message = Some("nothing to undo".into()),
+        }
+    }
+
+    fn redo(&mut self) {
+        let anchor = self.anchor();
+        match self.session.redo() {
+            Some(loc) => {
+                self.rebuild(anchor);
+                self.jump_to_line(loc);
+                self.message = Some("redone".into());
+            }
+            None => self.message = Some("nothing to redo".into()),
+        }
+    }
+
+    /// Save every changed side. On a conflict with the disk, asks what to do
+    /// and resumes from there. With `quit_after`, quits once nothing is left.
+    pub fn save_all(&mut self, quit_after: bool) {
+        let sides = self.session.dirty_sides();
+        let mut saved = Vec::new();
+        for side in sides {
+            match self.session.save(side, false) {
+                Ok(()) => saved.push(self.side_name(side)),
+                Err(SaveError::ChangedOnDisk) => {
+                    self.modal = Some(Modal::ChangedOnDisk { side, quit_after });
+                    return;
+                }
+                Err(e) => {
+                    let name = self.side_name(side);
+                    self.error(format!("could not save {name}: {e}"));
+                    return;
+                }
+            }
+        }
+        if quit_after {
+            self.outcome = Some(Outcome::Quit);
+        } else if saved.is_empty() {
+            self.message = Some("nothing to save".into());
+        } else {
+            self.message = Some(format!("saved {}", saved.join(", ")));
+        }
+    }
+
+    fn quit(&mut self) {
+        if self.session.is_dirty() {
+            self.modal = Some(Modal::QuitUnsaved);
+        } else {
+            self.outcome = Some(Outcome::Quit);
+        }
+    }
+
+    /// Re-read a side from disk as one undoable step. Returns whether it changed.
+    pub fn reload_from_disk(&mut self, side: Side) -> Result<bool, String> {
+        let path = self
+            .session
+            .doc(side)
+            .path
+            .clone()
+            .ok_or("no file to reload")?;
+        let real = std::fs::canonicalize(&path).unwrap_or(path);
+        let bytes =
+            std::fs::read(&real).map_err(|e| format!("cannot read {}: {e}", real.display()))?;
+        let mtime = std::fs::metadata(&real).and_then(|m| m.modified()).ok();
+        let anchor = self.anchor();
+        let changed = self
+            .session
+            .replace_content(side, &bytes, DiskId::of_bytes(&bytes, mtime));
+        if changed {
+            self.rebuild(anchor);
+        }
+        Ok(changed)
+    }
+
+    fn on_modal_key(&mut self, key: KeyEvent) {
+        let Some(modal) = self.modal else { return };
+        let code = key.code;
+        match modal {
+            Modal::QuitUnsaved => match code {
+                KeyCode::Char('w') => {
+                    self.modal = None;
+                    self.save_all(true);
+                }
+                KeyCode::Char('Q') => self.outcome = Some(Outcome::Quit),
+                KeyCode::Esc => self.modal = None,
+                _ => {}
+            },
+            Modal::ChangedOnDisk { side, quit_after } => match code {
+                KeyCode::Char('o') => {
+                    self.modal = None;
+                    match self.session.save(side, true) {
+                        Ok(()) => self.save_all(quit_after),
+                        Err(e) => self.error(format!("could not save: {e}")),
+                    }
+                }
+                KeyCode::Char('r') => {
+                    self.modal = None;
+                    match self.reload_from_disk(side) {
+                        Ok(_) => {
+                            let name = self.side_name(side);
+                            self.save_all(quit_after);
+                            if self.outcome.is_none() && self.message.is_none() {
+                                self.message = Some(format!("reloaded {name} from disk"));
+                            }
+                        }
+                        Err(e) => self.error(e),
+                    }
+                }
+                KeyCode::Esc => self.modal = None,
+                _ => {}
+            },
+            Modal::SaveFirst { side } => match code {
+                KeyCode::Char('w') => {
+                    self.modal = None;
+                    match self.session.save(side, false) {
+                        Ok(()) => self.request_editor(),
+                        Err(SaveError::ChangedOnDisk) => {
+                            self.modal = Some(Modal::ChangedOnDisk {
+                                side,
+                                quit_after: false,
+                            });
+                        }
+                        Err(e) => self.error(format!("could not save: {e}")),
+                    }
+                }
+                KeyCode::Esc => self.modal = None,
+                _ => {}
+            },
+        }
+    }
+
+    pub fn modal_text(&self) -> Option<ModalText> {
+        let modal = self.modal?;
+        Some(match modal {
+            Modal::QuitUnsaved => {
+                let sides = self.session.dirty_sides();
+                let title = match sides.len() {
+                    1 => "1 file has unsaved changes".to_string(),
+                    n => format!("{n} files have unsaved changes"),
+                };
+                let body = sides
+                    .iter()
+                    .map(|&s| {
+                        let n = self.session.edit_count(s);
+                        format!(
+                            "{}   {n} {}",
+                            self.side_name(s),
+                            if n == 1 { "edit" } else { "edits" }
+                        )
+                    })
+                    .collect();
+                let hints = vec![
+                    ("w", "Save and quit"),
+                    ("Q", "Quit without saving"),
+                    ("Esc", "Keep working"),
+                ];
+                ModalText { title, body, hints }
+            }
+            Modal::ChangedOnDisk { side, .. } => {
+                let n = self.session.edit_count(side);
+                ModalText {
+                    title: format!(
+                        "{} changed on disk after you opened it.",
+                        self.side_name(side)
+                    ),
+                    body: vec![format!(
+                        "Another program changed it. Your {n} {} in that version.",
+                        if n == 1 { "edit isn't" } else { "edits aren't" }
+                    )],
+                    hints: vec![
+                        ("o", "Overwrite with your version"),
+                        ("r", "Reload from disk, dropping your changes"),
+                        ("Esc", "Cancel"),
+                    ],
+                }
+            }
+            Modal::SaveFirst { side } => ModalText {
+                title: format!("{} has unsaved changes.", self.side_name(side)),
+                body: vec!["Save before opening it in your editor.".into()],
+                hints: vec![("w", "Save and open editor"), ("Esc", "Cancel")],
+            },
+        })
+    }
+
+    // ---- $EDITOR ----
+
+    /// Ask the event loop to run `$EDITOR` on the focused side at the cursor line.
+    fn request_editor(&mut self) {
+        let side = self.focus;
+        let doc = self.session.doc(side);
+        let name = self.side_name(side);
+        if doc.readonly {
+            let which = if side == Side::Left { "left" } else { "right" };
+            let why = self.readonly_reason(side);
+            self.error(format!(
+                "The {which} side {why} read-only, so it can't be edited."
+            ));
+            return;
+        }
+        let Some(path) = doc.path.clone().filter(|p| p.as_os_str() != "-") else {
+            self.error(format!("{name} is not a file"));
+            return;
+        };
+        if doc.is_dirty() {
+            self.modal = Some(Modal::SaveFirst { side });
+            return;
+        }
+        let line = self.line_near_cursor(side) + 1;
+        self.editor_request = Some(EditorRequest { side, line, path });
+    }
+
+    /// The side's line at the cursor row, or the nearest one above it.
+    fn line_near_cursor(&self, side: Side) -> usize {
+        let pick = |r: &Row| if side == Side::Left { r.left } else { r.right };
+        (0..=self.cursor.min(self.rows.len().saturating_sub(1)))
+            .rev()
+            .find_map(|i| self.rows.get(i).and_then(pick))
+            .or_else(|| self.rows.iter().find_map(pick))
+            .unwrap_or(0)
+    }
+
+    /// Called by the event loop after the editor returns (`Ok(true)` = exited cleanly).
+    pub fn finish_editor(&mut self, side: Side, result: Result<bool, String>) {
+        match result {
+            Err(e) => self.error(format!("could not run editor: {e}")),
+            Ok(false) => self.error("editor exited with an error; file not reloaded"),
+            Ok(true) => match self.reload_from_disk(side) {
+                Ok(true) => {
+                    self.message = Some(format!("reloaded {} after editing", self.side_name(side)))
+                }
+                Ok(false) => self.message = Some("no changes".into()),
+                Err(e) => self.error(e),
+            },
+        }
     }
 
     fn on_prompt_key(&mut self, key: KeyEvent) {

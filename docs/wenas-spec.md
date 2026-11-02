@@ -345,9 +345,9 @@ Sides read from stdin or a pipe are always read-only.
     tool = wenas
 [difftool]
     prompt = false
+    trustExitCode = true
 [difftool "wenas"]
     cmd = wenas "$LOCAL" "$REMOTE"
-    trustExitCode = true
 [alias]
     dd = difftool --dir-diff
 ```
@@ -361,7 +361,7 @@ Sides read from stdin or a pipe are always read-only.
 | Code | When |
 |---|---|
 | `0` | Normal quit, whether or not the sides differed; or the inputs were identical |
-| `1` | Aborted with `Ctrl-c` (with `trustExitCode = true`, git stops the rest of the run) |
+| `1` | Aborted with `Ctrl-c` (with `difftool.trustExitCode = true`, git stops the rest of the run) |
 | `2` | Error: unreadable file, mismatched argument types, output not a terminal, file over the size limit |
 
 - **Identical inputs:** print `identical` and exit `0` without opening the UI.
@@ -478,6 +478,7 @@ CI runs on macOS and Linux.
 | | **S1 answer (2026-11-02)** | Yes: `imara-diff` 0.2 provides `Diff::postprocess_lines` (indent heuristic). On 400 random line-pair inputs, 390 produced hunks identical to `git diff --no-index --histogram --indent-heuristic`; the rest are equally valid diffs placed differently on degenerate ties. All crafted realistic cases match exactly (`tests/engine.rs`). **Decision:** use `imara-diff` as is; no port, no `git` fallback. |
 | **S2** | Does the OSC 11 background query work inside tmux in Ghostty? | Test with your setup; if unreliable, default to `theme = "dark"` when `$TMUX` is set. |
 | **S3** | How reliably can git's temporary sides be detected on macOS (`$TMPDIR` paths, `git-blob-*`, `git-difftool.*/left/`)? Does `--no-symlinks` mode still copy edits back? | Run both difftool modes and record the paths git passes; adjust detection rules and docs. |
+| | **S3 answer (2026-11-02, Linux, git 2.43)** | Single-file mode: `$LOCAL` is `<tmp>/git-blob-XXXXXX/<name>` (a *directory* named `git-blob-*`), `$REMOTE` is the working file as a relative path. `--dir-diff`: `<tmp>/git-difftool.XXXXXX/left/` and `.../right/`; the right side is symlinks into the working tree, or with `--no-symlinks` copies that git copies back after the tool exits. Edits land in the working tree in both modes. Rules in `src/gitenv.rs`: any `git-blob-*` path component, or `git-difftool.*` followed by `left`. **Correction to §8.2:** git ignores `trustExitCode` inside `[difftool "wenas"]`; only `difftool.trustExitCode` (or `--trust-exit-code`) makes a non-zero exit stop the run, so the snippet now sets it under `[difftool]`. macOS paths still to be checked (only `$TMPDIR` should differ). |
 | O1 | Is `wenas` free on Homebrew? | Free on crates.io (checked 2026-11-02); Homebrew not yet checked. |
 | O2 | Default tab width 4 or 8? | 4 for now (most code); revisit after daily use. |
 | O3 | Should a side with unsaved changes block `e`, or should wenas save automatically before handing off? | Ask in v1 (§7.3); revisit after use. |

@@ -338,10 +338,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             }
         }
     }
-    draw_status(buf, app, area);
+    if app.modal.is_some() {
+        draw_modal(buf, app, area);
+    } else {
+        draw_status(buf, app, area);
+    }
 }
 
-fn side_name(app: &App, side: Side) -> String {
+pub fn side_name(app: &App, side: Side) -> String {
     let d = app.session.doc(side);
     d.label.clone().unwrap_or_else(|| match &d.path {
         Some(p) if p.as_os_str() == "-" => "<stdin>".into(),
@@ -588,10 +592,18 @@ fn draw_unified_row(buf: &mut Buffer, fr: &Frame1, area: Rect, y: u16, ri: usize
     );
 }
 
-fn hints(buf: &mut Buffer, x: &mut u16, y: u16, max_x: u16, t: &Theme, items: &[(&str, &str)]) {
+fn hints(
+    buf: &mut Buffer,
+    x: &mut u16,
+    y: u16,
+    max_x: u16,
+    t: &Theme,
+    items: &[(&str, &str)],
+    sep: &str,
+) {
     for (i, (k, d)) in items.iter().enumerate() {
         if i > 0 {
-            put(buf, x, y, max_x, "  ", Style::default());
+            put(buf, x, y, max_x, sep, Style::default());
         }
         put(buf, x, y, max_x, k, key_style(t).bg(t.panel_bg));
         put(
@@ -613,6 +625,13 @@ fn hints_len(items: &[(&str, &str)]) -> u16 {
         + 2 * items.len().saturating_sub(1) as u16
 }
 
+/// Rough width of the status line's left part, to decide how many hints fit.
+fn x_after_left(app: &App) -> u16 {
+    let msg = app.message.as_deref().map_or(0, |m| m.chars().count() + 2);
+    let base = 8 + app.hunk_label().len() + 22;
+    (base.max(msg + 8)) as u16
+}
+
 fn draw_status(buf: &mut Buffer, app: &App, area: Rect) {
     let t = &app.theme;
     let y = area.height - 1;
@@ -622,17 +641,61 @@ fn draw_status(buf: &mut Buffer, app: &App, area: Rect) {
     let mut x = 0u16;
     let end = area.width;
 
-    let right_items: Vec<(&str, &str)> = if app.help {
+    if app.message_is_error {
+        let style = if t.no_color {
+            bold(Style::default()).add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().fg(t.removed_fg).bg(t.removed_bg)
+        };
+        buf.set_style(Rect::new(0, y, area.width, 1), style);
+        let mut x = 1;
+        put(
+            buf,
+            &mut x,
+            y,
+            end,
+            &format!("× {}", app.message.as_deref().unwrap_or("")),
+            style,
+        );
+        return;
+    }
+
+    let (lw, rw) = (!app.session.left.readonly, !app.session.right.readonly);
+    let mut right_items: Vec<(&str, &str)> = if app.help {
         vec![]
     } else if app.prompt.is_some() {
         vec![("Enter", "search"), ("Esc", "cancel")]
     } else if app.search.is_some() {
         vec![("n", "next"), ("N", "previous"), ("Esc", "clear")]
-    } else if app.view == View::Unified {
-        vec![("J K", "hunks"), ("v", "side by side"), ("F1", "help")]
     } else {
-        vec![("J K", "hunks"), ("v", "unified"), ("F1", "help")]
+        let mut items = Vec::new();
+        if rw {
+            items.push((">", "copy to right"));
+        }
+        if lw {
+            items.push(("<", "copy to left"));
+        }
+        if lw || rw {
+            items.push(("u", "undo"));
+        } else {
+            items.push(("J K", "hunks"));
+            items.push((
+                "v",
+                if app.view == View::Unified {
+                    "side by side"
+                } else {
+                    "unified"
+                },
+            ));
+        }
+        items.push(("F1", "help"));
+        items
     };
+    // Drop the least important hints until the rest fit.
+    while right_items.len() > 1 && hints_len(&right_items) + 2 + x_after_left(app) > end {
+        let n = right_items.len();
+        right_items.remove(n - 2);
+    }
 
     if let Some(p) = &app.prompt {
         put(
@@ -712,8 +775,64 @@ fn draw_status(buf: &mut Buffer, app: &App, area: Rect) {
     let need = hints_len(&right_items);
     if need + 2 <= end.saturating_sub(x) {
         let mut rx = end - need - 1;
-        hints(buf, &mut rx, y, end, t, &right_items);
+        hints(buf, &mut rx, y, end, t, &right_items, "  ");
     }
+}
+
+fn draw_modal(buf: &mut Buffer, app: &App, area: Rect) {
+    let Some(m) = app.modal_text() else { return };
+    let t = &app.theme;
+    let height = (m.body.len() + 4).min(area.height as usize) as u16;
+    let y0 = area.height - height;
+    let panel = Style::default().bg(t.panel_bg);
+    for y in y0..area.height {
+        buf.set_stringn(
+            0,
+            y,
+            " ".repeat(area.width as usize),
+            area.width as usize,
+            panel,
+        );
+    }
+    let rule = if t.no_color {
+        bold(Style::default())
+    } else {
+        Style::default().fg(t.amber).bg(t.panel_bg)
+    };
+    buf.set_stringn(
+        0,
+        y0,
+        "─".repeat(area.width as usize),
+        area.width as usize,
+        rule,
+    );
+    let w = area.width as usize;
+    buf.set_stringn(
+        1,
+        y0 + 1,
+        &m.title,
+        w.saturating_sub(2),
+        bold(Style::default().fg(t.bright).bg(t.panel_bg)),
+    );
+    for (i, line) in m.body.iter().enumerate() {
+        buf.set_stringn(
+            1,
+            y0 + 2 + i as u16,
+            line,
+            w.saturating_sub(2),
+            Style::default().fg(t.muted).bg(t.panel_bg),
+        );
+    }
+    let mut x = 1;
+    hints(
+        buf,
+        &mut x,
+        area.height - 1,
+        area.width,
+        t,
+        &m.hints,
+        "    ",
+    );
 }
 
 const HELP: &[(&str, &[(&str, &str)])] = &[
@@ -729,7 +848,14 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ),
     (
         "Hunks",
-        &[("J K", "next, previous"), ("]c [c", "next, previous")],
+        &[
+            ("J K", "next, previous"),
+            ("]c [c", "next, previous"),
+            (">", "copy to right"),
+            ("<", "copy to left"),
+            ("u", "undo"),
+            ("Ctrl-r", "redo"),
+        ],
     ),
     (
         "Search",
@@ -743,7 +869,16 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         "View",
         &[("v", "side by side, unified"), ("W", "whitespace mode")],
     ),
-    ("Files", &[("q Q", "quit"), ("Ctrl-c", "abort, exit 1")]),
+    (
+        "Files",
+        &[
+            ("w", "save"),
+            ("e", "open in $EDITOR"),
+            ("q", "quit"),
+            ("Q", "quit, don't save"),
+            ("Ctrl-c", "abort, exit 1"),
+        ],
+    ),
 ];
 
 fn draw_help(buf: &mut Buffer, app: &App, area: Rect) {
@@ -859,6 +994,7 @@ fn draw_binary(buf: &mut Buffer, app: &App, area: Rect) {
         area.width,
         t,
         &[("q", "quit"), ("Ctrl-c", "abort")],
+        "  ",
     );
 }
 

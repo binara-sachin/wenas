@@ -62,9 +62,9 @@ pub const GIT_CONFIG: &str = r#"[diff]
     tool = wenas
 [difftool]
     prompt = false
+    trustExitCode = true
 [difftool "wenas"]
     cmd = wenas "$LOCAL" "$REMOTE"
-    trustExitCode = true
 [alias]
     dd = difftool --dir-diff
 "#;

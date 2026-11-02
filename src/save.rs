@@ -41,6 +41,9 @@ pub fn document_from_loaded(loaded: Loaded, path: Option<&Path>) -> Document {
     let disk = (loaded.source == Source::File).then(|| DiskId::of_bytes(&loaded.bytes, mtime));
     let mut doc = Document::from_bytes(loaded.bytes);
     doc.readonly = loaded.source == Source::Stream;
+    if doc.readonly {
+        doc.readonly_note = Some("stdin or a pipe");
+    }
     doc.disk = disk;
     doc.path = path.map(Path::to_path_buf);
     doc

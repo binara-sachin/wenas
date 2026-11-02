@@ -1,0 +1,24 @@
+---
+source: tests/ui.rs
+expression: text(&mut a)
+---
+ left.rs                                            right.rs  [+]
+
+  1  a                                               1  a
+▎ 2  B                                             ▎ 2  B
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1 file has unsaved changes
+ right.rs   1 edit
+
+ w Save and quit    Q Quit without saving    Esc Keep working

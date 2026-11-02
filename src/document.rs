@@ -1,0 +1,243 @@
+//! A file as an append-only byte store plus a list of line spans (spec §5.2 `document`).
+//!
+//! Original bytes are never copied or modified. Edits replace entries in the
+//! span list; inserted text is appended to the store. Concatenating the spans
+//! reproduces the file, so untouched bytes are written back unchanged.
+
+use crate::input::{Eol, EolStyle};
+use std::path::PathBuf;
+use std::time::SystemTime;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: u32,
+    pub end: u32,
+}
+
+/// Size, mtime and hash of a file at load time, for change detection on save.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskId {
+    pub size: u64,
+    pub mtime: Option<SystemTime>,
+    pub hash: u64,
+}
+
+impl DiskId {
+    pub fn of_bytes(bytes: &[u8], mtime: Option<SystemTime>) -> Self {
+        DiskId {
+            size: bytes.len() as u64,
+            mtime,
+            hash: fnv1a(bytes),
+        }
+    }
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+#[derive(Debug)]
+pub struct Document {
+    store: Vec<u8>,
+    lines: Vec<Span>,
+    pub path: Option<PathBuf>,
+    pub label: Option<String>,
+    pub readonly: bool,
+    pub disk: Option<DiskId>,
+    /// Identifies the current content; equal to `saved_state` means "clean".
+    pub(crate) state: u64,
+    pub(crate) saved_state: u64,
+}
+
+impl Document {
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        assert!(bytes.len() <= u32::MAX as usize, "document too large");
+        let mut lines = Vec::new();
+        let mut start = 0usize;
+        for nl in memchr::memchr_iter(b'\n', &bytes) {
+            lines.push(Span {
+                start: start as u32,
+                end: (nl + 1) as u32,
+            });
+            start = nl + 1;
+        }
+        if start < bytes.len() {
+            lines.push(Span {
+                start: start as u32,
+                end: bytes.len() as u32,
+            });
+        }
+        Document {
+            store: bytes,
+            lines,
+            path: None,
+            label: None,
+            readonly: false,
+            disk: None,
+            state: 0,
+            saved_state: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+    pub fn is_dirty(&self) -> bool {
+        self.state != self.saved_state
+    }
+
+    pub fn span(&self, i: usize) -> Span {
+        self.lines[i]
+    }
+    pub fn spans(&self, range: std::ops::Range<usize>) -> &[Span] {
+        &self.lines[range]
+    }
+    pub fn bytes_of(&self, s: Span) -> &[u8] {
+        &self.store[s.start as usize..s.end as usize]
+    }
+
+    /// Line `i` including its terminator.
+    pub fn raw_line(&self, i: usize) -> &[u8] {
+        self.bytes_of(self.lines[i])
+    }
+
+    /// Line `i` without its terminator.
+    pub fn line(&self, i: usize) -> &[u8] {
+        let raw = self.raw_line(i);
+        &raw[..raw.len() - eol_len(raw)]
+    }
+
+    /// Terminator of line `i`; `None` only for an unterminated final line.
+    pub fn eol_of(&self, i: usize) -> Option<Eol> {
+        eol_of(self.raw_line(i))
+    }
+
+    pub fn style(&self) -> EolStyle {
+        let (mut lf, mut crlf) = (0usize, 0usize);
+        for i in 0..self.len() {
+            match self.eol_of(i) {
+                Some(Eol::Lf) => lf += 1,
+                Some(Eol::Crlf) => crlf += 1,
+                None => {}
+            }
+        }
+        match (lf, crlf) {
+            (0, 0) => EolStyle::None,
+            (_, 0) => EolStyle::Lf,
+            (0, _) => EolStyle::Crlf,
+            _ => EolStyle::Mixed,
+        }
+    }
+
+    /// Most common terminator; LF when there are none or on a tie.
+    pub fn dominant_eol(&self) -> Eol {
+        let crlf = (0..self.len())
+            .filter(|&i| self.eol_of(i) == Some(Eol::Crlf))
+            .count();
+        let lf = (0..self.len())
+            .filter(|&i| self.eol_of(i) == Some(Eol::Lf))
+            .count();
+        if crlf > lf { Eol::Crlf } else { Eol::Lf }
+    }
+
+    /// True when the last line has no terminator.
+    pub fn missing_final_newline(&self) -> bool {
+        !self.is_empty() && self.eol_of(self.len() - 1).is_none()
+    }
+
+    /// Append bytes to the store and return the span covering them.
+    pub fn append(&mut self, bytes: &[u8]) -> Span {
+        let start = self.store.len();
+        assert!(
+            start + bytes.len() <= u32::MAX as usize,
+            "document too large"
+        );
+        self.store.extend_from_slice(bytes);
+        Span {
+            start: start as u32,
+            end: self.store.len() as u32,
+        }
+    }
+
+    /// Replace `range` with `new`, returning the removed spans.
+    pub fn splice(&mut self, range: std::ops::Range<usize>, new: &[Span]) -> Vec<Span> {
+        self.lines.splice(range, new.iter().copied()).collect()
+    }
+
+    /// The whole file, as it would be written.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let total: usize = self.lines.iter().map(|s| (s.end - s.start) as usize).sum();
+        let mut out = Vec::with_capacity(total);
+        for s in &self.lines {
+            out.extend_from_slice(self.bytes_of(*s));
+        }
+        out
+    }
+}
+
+pub fn eol_len(raw: &[u8]) -> usize {
+    match eol_of(raw) {
+        Some(Eol::Crlf) => 2,
+        Some(Eol::Lf) => 1,
+        None => 0,
+    }
+}
+
+pub fn eol_of(raw: &[u8]) -> Option<Eol> {
+    if raw.ends_with(b"\r\n") {
+        Some(Eol::Crlf)
+    } else if raw.ends_with(b"\n") {
+        Some(Eol::Lf)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_lines_and_round_trips() {
+        for text in [
+            &b""[..],
+            b"a",
+            b"a\n",
+            b"a\nb",
+            b"a\r\nb\n\n",
+            b"\n",
+            b"a\rb\n",
+        ] {
+            let d = Document::from_bytes(text.to_vec());
+            assert_eq!(d.to_bytes(), text);
+        }
+        assert_eq!(Document::from_bytes(b"a\rb\n".to_vec()).len(), 1);
+    }
+
+    #[test]
+    fn line_strips_terminator() {
+        let d = Document::from_bytes(b"a\r\nb\nc".to_vec());
+        assert_eq!(d.line(0), b"a");
+        assert_eq!(d.line(1), b"b");
+        assert_eq!(d.line(2), b"c");
+        assert_eq!(d.style(), EolStyle::Mixed);
+        assert!(d.missing_final_newline());
+    }
+
+    #[test]
+    fn dominant_eol_defaults_to_lf() {
+        assert_eq!(Document::from_bytes(b"x".to_vec()).dominant_eol(), Eol::Lf);
+        assert_eq!(
+            Document::from_bytes(b"a\r\nb\r\nc\n".to_vec()).dominant_eol(),
+            Eol::Crlf
+        );
+    }
+}

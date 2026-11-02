@@ -475,6 +475,7 @@ CI runs on macOS and Linux.
 | ID | Question | Plan |
 |---|---|---|
 | **S1** | Does `imara-diff` support git's indent heuristic (or an equivalent post-processing hook)? | Check its API. If missing, port the heuristic from git's `xdiff` (a few hundred lines). If porting is impractical, fall back to running `git diff` for the first diff only. |
+| | **S1 answer (2026-11-02)** | Yes: `imara-diff` 0.2 provides `Diff::postprocess_lines` (indent heuristic). On 400 random line-pair inputs, 390 produced hunks identical to `git diff --no-index --histogram --indent-heuristic`; the rest are equally valid diffs placed differently on degenerate ties. All crafted realistic cases match exactly (`tests/engine.rs`). **Decision:** use `imara-diff` as is; no port, no `git` fallback. |
 | **S2** | Does the OSC 11 background query work inside tmux in Ghostty? | Test with your setup; if unreliable, default to `theme = "dark"` when `$TMUX` is set. |
 | **S3** | How reliably can git's temporary sides be detected on macOS (`$TMPDIR` paths, `git-blob-*`, `git-difftool.*/left/`)? Does `--no-symlinks` mode still copy edits back? | Run both difftool modes and record the paths git passes; adjust detection rules and docs. |
 | O1 | Is `wenas` free on Homebrew? | Free on crates.io (checked 2026-11-02); Homebrew not yet checked. |

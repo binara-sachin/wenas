@@ -71,6 +71,55 @@ pub fn side_by_side(hunks: &[Hunk], left_len: usize, right_len: usize) -> Vec<Ro
     rows
 }
 
+/// Unified rows: unchanged lines, then each hunk's removed lines followed by
+/// its added lines. Removed rows have no right line; added rows no left line.
+pub fn unified(hunks: &[Hunk], left_len: usize, right_len: usize) -> Vec<Row> {
+    let mut rows = Vec::with_capacity(left_len.max(right_len));
+    let (mut l, mut r) = (0usize, 0usize);
+    for (hi, h) in hunks.iter().enumerate() {
+        while l < h.left.start {
+            rows.push(Row {
+                left: Some(l),
+                right: Some(r),
+                kind: RowKind::Same,
+                hunk: None,
+            });
+            l += 1;
+            r += 1;
+        }
+        for i in h.left.clone() {
+            rows.push(Row {
+                left: Some(i),
+                right: None,
+                kind: RowKind::Removed,
+                hunk: Some(hi),
+            });
+        }
+        for i in h.right.clone() {
+            rows.push(Row {
+                left: None,
+                right: Some(i),
+                kind: RowKind::Added,
+                hunk: Some(hi),
+            });
+        }
+        l = h.left.end;
+        r = h.right.end;
+    }
+    while l < left_len {
+        rows.push(Row {
+            left: Some(l),
+            right: Some(r),
+            kind: RowKind::Same,
+            hunk: None,
+        });
+        l += 1;
+        r += 1;
+    }
+    debug_assert_eq!(r, right_len);
+    rows
+}
+
 /// First row index belonging to each hunk (for `J`/`K` navigation).
 pub fn hunk_first_rows(rows: &[Row], hunk_count: usize) -> Vec<usize> {
     let mut out = vec![usize::MAX; hunk_count];
@@ -114,6 +163,29 @@ mod tests {
         assert_eq!(rows[2].left, None);
         assert_eq!(rows[3].left, Some(2));
         assert_eq!(rows[3].right, Some(3));
+    }
+
+    #[test]
+    fn unified_rows_remove_then_add() {
+        let hunks = vec![Hunk {
+            left: 1..2,
+            right: 1..3,
+        }];
+        let rows = unified(&hunks, 3, 4);
+        let kinds: Vec<_> = rows.iter().map(|r| r.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                RowKind::Same,
+                RowKind::Removed,
+                RowKind::Added,
+                RowKind::Added,
+                RowKind::Same
+            ]
+        );
+        assert_eq!(rows[1].right, None);
+        assert_eq!(rows[4].left, Some(2));
+        assert_eq!(rows[4].right, Some(3));
     }
 
     #[test]

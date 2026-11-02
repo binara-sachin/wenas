@@ -1,0 +1,24 @@
+---
+source: tests/ui.rs
+expression: text(&mut a)
+---
+ Keys                                                                               F1 or Esc close
+
+  Move                                             Hunks
+  j k        line down, up                         J K        next, previous
+  Ctrl-d u   half page                             ]c [c      next, previous
+  gg G       top, bottom
+  ← →        scroll sideways                       View
+  Tab        other pane                            v          side by side, unified
+                                                   W          whitespace mode
+  Search
+  / ?        forward, back
+  n N        next, previous
+  Esc        clear matches
+
+  Files
+  q Q        quit
+  Ctrl-c     abort, exit 1
+
+
+ 1/4   whitespace off  LF | LF

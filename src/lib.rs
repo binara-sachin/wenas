@@ -2,8 +2,12 @@
 
 pub mod align;
 pub mod cli;
+pub mod config;
 pub mod diff;
 pub mod document;
+pub mod inline;
 pub mod input;
 pub mod ops;
 pub mod save;
+pub mod theme;
+pub mod ui;

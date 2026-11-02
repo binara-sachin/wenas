@@ -1,0 +1,14 @@
+---
+source: tests/ui.rs
+expression: text(&mut a)
+---
+ assets/logo.png  (binary)
+
+  left:   48,213 bytes
+  right:  48,301 bytes
+  first difference at byte 2,048
+
+
+
+
+ q quit  Ctrl-c abort

@@ -137,7 +137,7 @@ The starting principle was to lean on standard system tools. Working through the
 | `diff` | Normalise each line for comparison (strip the line ending; apply `-w`/`-b`), intern lines into tokens, run `imara-diff` histogram, apply the indent heuristic (see S1), and produce a list of hunks. |
 | `align` | Turn hunks into rows: side-by-side rows with filler on the shorter side, or unified rows. Maps between file line numbers and screen rows. |
 | `inline` | For each changed block: pair old and new lines (one-to-one when counts match, otherwise by similarity), split them into words and punctuation, and diff the tokens with Myers. Skips lines over about 2,000 characters. Calculated lazily for hunks on screen and cached until the next re-diff. |
-| `dircmp` | Walk both trees in parallel (`ignore` or `jwalk`), match by relative path, classify (identical, modified, left-only, right-only, binary, type mismatch, symlink). Compare size first, then bytes in chunks, stopping at the first difference. Skip `.git/`. Don't follow symlinks; compare their targets. Ignore permission-only changes. |
+| `dircmp` | Walk both trees in parallel (`ignore` or `jwalk`), match by relative path, classify (identical, modified, left-only, right-only, binary, type mismatch, symlink). Compare size first, then bytes in chunks, stopping at the first difference. Skip `.git/`. Don't follow symlinks; compare their targets, except that a symlink opposite a regular file is followed (D32). Ignore permission-only changes. |
 | `ops` | Copy a hunk left→right or right→left (converting line endings to the target's), keep the undo/redo list, save. |
 | `editor` | Leave the alternate screen, run `$EDITOR +<line> <file>`, restore the terminal, reload the file, re-diff. Records one undo step from before/after snapshots. |
 | `ui` | `ratatui` + `crossterm`. File view (side-by-side and unified), directory view, status line, prompts, help. Theme detection and colour depth. Draws only visible rows. |
@@ -361,7 +361,7 @@ Sides read from stdin or a pipe are always read-only.
 | Code | When |
 |---|---|
 | `0` | Normal quit, whether or not the sides differed; or the inputs were identical |
-| `1` | Aborted with `Ctrl-c` (with `difftool.trustExitCode = true`, git stops the rest of the run) |
+| `1` | Aborted with `Ctrl-c` (with `difftool.trustExitCode = true`, git stops the rest of a per-file run; in `--dir-diff` mode git makes a single call and ignores the exit code, so `Ctrl-c` simply ends the session) |
 | `2` | Error: unreadable file, mismatched argument types, output not a terminal, file over the size limit |
 
 - **Identical inputs:** print `identical` and exit `0` without opening the UI.
@@ -517,3 +517,7 @@ CI runs on macOS and Linux.
 | D28 | Testing: unit, comparison with git, property, snapshot, integration, benchmarks. |
 | D29 | Name: `wenas`. |
 | D30 | `Esc` cancels a running diff or scan; `Ctrl-c` always aborts with exit 1. (Resolves a clash between D20 and D23.) |
+| D31 | Directory compare runs on one worker thread that walks both trees together in name order and streams entries, rather than a parallel walker crate (no extra dependency; revisit if the 50k-file target is missed). |
+| D32 | A symlink opposite a regular file is compared through the link, because `git difftool --dir-diff` presents the working tree as symlinks. Two symlinks are still compared by target; a symlink to a directory is never followed. |
+| D33 | Directory mode waits up to 150 ms for the scan: if it has finished with no differences, print `identical` and exit 0 without opening the UI; otherwise open the list and keep streaming. |
+| D34 | Files opened from the directory list keep their session (edits, undo) when you return to the list. Quit asks once about all of them; "save both" resolves disk conflicts file by file. |

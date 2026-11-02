@@ -4,6 +4,7 @@ pub mod align;
 pub mod cli;
 pub mod config;
 pub mod diff;
+pub mod dircmp;
 pub mod document;
 pub mod gitenv;
 pub mod inline;

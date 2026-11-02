@@ -6,6 +6,7 @@
 //!   The right side holds symlinks into the working tree, or copies that git
 //!   copies back afterwards with `--no-symlinks`; edits land either way.
 
+use crate::document::Document;
 use std::path::{Component, Path};
 
 /// True when `path` is git's temporary copy of an old version.
@@ -25,6 +26,18 @@ pub fn is_git_temp(path: &Path) -> bool {
     names
         .windows(2)
         .any(|w| w[0].starts_with("git-difftool.") && w[1] == "left")
+}
+
+/// Apply the read-only rules to a document loaded from `path`: git's temporary
+/// copies are always read-only; `forced` carries a command-line flag's reason.
+pub fn mark_readonly(doc: &mut Document, path: &Path, forced: Option<&'static str>) {
+    if is_git_temp(path) {
+        doc.readonly = true;
+        doc.readonly_note = Some("git's old version");
+    } else if let Some(why) = forced {
+        doc.readonly = true;
+        doc.readonly_note = Some(why);
+    }
 }
 
 #[cfg(test)]

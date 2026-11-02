@@ -23,6 +23,10 @@ pub enum Outcome {
     Quit,
     /// `Ctrl-c`: exit code 1 so git stops the rest of a difftool run.
     Abort,
+    /// Directory mode: return to the file list (the session is kept).
+    Back,
+    /// Directory mode: the user asked to quit; the shell decides whether to ask first.
+    QuitAsk,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +109,8 @@ pub struct App {
     pub theme: Theme,
     pub cfg: ViewConfig,
     pub binary: Option<BinaryInfo>,
+    /// Opened from the directory view: `Backspace` goes back, `q` defers to the shell.
+    pub in_directory: bool,
     pub width: u16,
     pub height: u16,
     pub rows: Vec<Row>,
@@ -138,6 +144,7 @@ impl App {
             view_override: cfg.force_unified.then_some(View::Unified),
             cfg,
             binary: None,
+            in_directory: false,
             width: size.0,
             height: size.1,
             rows: Vec::new(),
@@ -511,10 +518,13 @@ impl App {
         self.message = None;
         self.message_is_error = false;
         if self.binary.is_some() {
-            if matches!(
+            let leave = matches!(
                 key.code,
-                KeyCode::Char('q' | 'Q') | KeyCode::Esc | KeyCode::Enter
-            ) {
+                KeyCode::Char('q' | 'Q') | KeyCode::Esc | KeyCode::Enter | KeyCode::Backspace
+            );
+            if leave && self.in_directory {
+                self.outcome = Some(Outcome::Back);
+            } else if leave && key.code != KeyCode::Backspace {
                 self.outcome = Some(Outcome::Quit);
             }
             return;
@@ -605,6 +615,7 @@ impl App {
             KeyCode::Char('q') => self.quit(),
             KeyCode::Char('Q') => self.outcome = Some(Outcome::Quit),
             KeyCode::Esc => self.clear_search(),
+            KeyCode::Backspace if self.in_directory => self.outcome = Some(Outcome::Back),
             KeyCode::F(1) => self.help = true,
             _ => {}
         }
@@ -746,7 +757,11 @@ impl App {
             }
         }
         if quit_after {
-            self.outcome = Some(Outcome::Quit);
+            self.outcome = Some(if self.in_directory {
+                Outcome::QuitAsk
+            } else {
+                Outcome::Quit
+            });
         } else if saved.is_empty() {
             self.message = Some("nothing to save".into());
         } else {
@@ -755,7 +770,9 @@ impl App {
     }
 
     fn quit(&mut self) {
-        if self.session.is_dirty() {
+        if self.in_directory {
+            self.outcome = Some(Outcome::QuitAsk);
+        } else if self.session.is_dirty() {
             self.modal = Some(Modal::QuitUnsaved);
         } else {
             self.outcome = Some(Outcome::Quit);

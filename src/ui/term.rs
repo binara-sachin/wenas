@@ -2,6 +2,7 @@
 
 use super::app::{App, EditorRequest, Outcome};
 use super::render;
+use crate::ops::Side;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, Event};
@@ -10,6 +11,7 @@ use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode, size,
 };
 use std::io::{self, Stdout};
+use std::time::Duration;
 
 /// Restores the terminal when dropped, including on panic unwinding.
 pub struct TerminalGuard;
@@ -47,23 +49,61 @@ pub fn terminal_size() -> (u16, u16) {
     size().unwrap_or((80, 24))
 }
 
-pub fn run_loop(
+/// Something the event loop can drive: a single file view or a directory session.
+pub trait Ui {
+    fn draw(&mut self, f: &mut ratatui::Frame);
+    fn on_key(&mut self, key: ratatui::crossterm::event::KeyEvent);
+    /// Called between events while `polling()` is true (e.g. to collect scan results).
+    fn tick(&mut self) {}
+    /// True while the screen changes on its own and must be redrawn periodically.
+    fn polling(&self) -> bool {
+        false
+    }
+    fn outcome(&self) -> Option<Outcome>;
+    fn editor_request(&mut self) -> Option<EditorRequest>;
+    fn finish_editor(&mut self, side: Side, result: Result<bool, String>);
+}
+
+impl Ui for App {
+    fn draw(&mut self, f: &mut ratatui::Frame) {
+        render::draw(f, self);
+    }
+    fn on_key(&mut self, key: ratatui::crossterm::event::KeyEvent) {
+        App::on_key(self, key);
+    }
+    fn outcome(&self) -> Option<Outcome> {
+        self.outcome
+    }
+    fn editor_request(&mut self) -> Option<EditorRequest> {
+        self.editor_request.take()
+    }
+    fn finish_editor(&mut self, side: Side, result: Result<bool, String>) {
+        App::finish_editor(self, side, result);
+    }
+}
+
+pub fn run_loop<U: Ui>(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    app: &mut App,
+    ui: &mut U,
 ) -> io::Result<Outcome> {
     loop {
-        terminal.draw(|f| render::draw(f, app))?;
+        ui.tick();
+        terminal.draw(|f| ui.draw(f))?;
+        // While something is animating, wake up regularly instead of blocking.
+        if ui.polling() && !event::poll(Duration::from_millis(60))? {
+            continue;
+        }
         match event::read()? {
-            Event::Key(k) => app.on_key(k),
+            Event::Key(k) => ui.on_key(k),
             Event::Resize(..) => {}
             _ => {}
         }
-        if let Some(req) = app.editor_request.take() {
+        if let Some(req) = ui.editor_request() {
             let result =
                 with_terminal_suspended(terminal, || spawn_editor(&resolve_editor(), &req));
-            app.finish_editor(req.side, result);
+            ui.finish_editor(req.side, result);
         }
-        if let Some(o) = app.outcome {
+        if let Some(o) = ui.outcome() {
             return Ok(o);
         }
     }

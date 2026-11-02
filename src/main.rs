@@ -5,11 +5,15 @@ use std::process::ExitCode;
 use wenas::cli::{Cli, GIT_CONFIG};
 use wenas::config;
 use wenas::diff::diff;
-use wenas::gitenv::is_git_temp;
+use wenas::dircmp::{Msg, Scan};
+use wenas::gitenv::mark_readonly;
 use wenas::input::{self, read_input};
 use wenas::ops::Session;
 use wenas::save::document_from_loaded;
 use wenas::theme::{Depth, Theme, resolve_dark};
+use wenas::ui::dir::DirView;
+use wenas::ui::shell::{Shell, ShellOptions};
+use wenas::ui::term::Ui;
 use wenas::ui::term::{TerminalGuard, run_loop, terminal_size};
 use wenas::ui::{App, BinaryInfo, Outcome, ViewConfig};
 
@@ -52,7 +56,7 @@ fn run(cli: &Cli) -> anyhow::Result<u8> {
         );
     }
     if left.is_dir() {
-        anyhow::bail!("directory comparison is not implemented yet (milestone M4)");
+        return run_dir(cli, left, right);
     }
     if left.as_os_str() == "-" && right.as_os_str() == "-" {
         anyhow::bail!("only one side may read from stdin");
@@ -81,22 +85,16 @@ fn run(cli: &Cli) -> anyhow::Result<u8> {
     let mut r = document_from_loaded(rl, Some(right));
     l.label = cli.label_left.clone();
     r.label = cli.label_right.clone();
-    for (doc, path, flag, flag_name) in [
-        (&mut l, left, cli.readonly_left, "--readonly-left"),
-        (&mut r, right, cli.readonly_right, "--readonly-right"),
-    ] {
-        if is_git_temp(path) {
-            doc.readonly = true;
-            doc.readonly_note = Some("git's old version");
-        } else if flag {
-            doc.readonly = true;
-            doc.readonly_note = Some(if flag_name == "--readonly-left" {
-                "marked --readonly-left"
-            } else {
-                "marked --readonly-right"
-            });
-        }
-    }
+    mark_readonly(
+        &mut l,
+        left,
+        cli.readonly_left.then_some("marked --readonly-left"),
+    );
+    mark_readonly(
+        &mut r,
+        right,
+        cli.readonly_right.then_some("marked --readonly-right"),
+    );
     let ws = if cli.ignore_all_space || cli.ignore_space_change {
         cli.whitespace()
     } else {
@@ -127,9 +125,9 @@ fn display_name(path: &Path, label: Option<&str>) -> String {
 }
 
 /// Raw mode, theme detection, alternate screen, event loop, restore.
-fn interactive(
+fn interactive<U: Ui>(
     cfg: &config::Config,
-    build: impl FnOnce(Theme, (u16, u16)) -> App,
+    build: impl FnOnce(Theme, (u16, u16)) -> U,
 ) -> anyhow::Result<u8> {
     let guard = TerminalGuard::raw()?;
     // The OSC 11 query must run in raw mode but before the alternate screen.
@@ -144,5 +142,59 @@ fn interactive(
     Ok(match outcome? {
         Outcome::Quit => EXIT_OK,
         Outcome::Abort => EXIT_ABORT,
+        // Directory-only outcomes are handled inside the shell.
+        Outcome::Back | Outcome::QuitAsk => EXIT_OK,
+    })
+}
+
+/// Directory mode. The scan starts immediately; if it finishes within a moment
+/// and found nothing, behave like identical files and never open the UI.
+fn run_dir(cli: &Cli, left: &Path, right: &Path) -> anyhow::Result<u8> {
+    let cfg = config::load(cli.config.as_deref())?;
+    let scan = Scan::spawn(
+        left.to_path_buf(),
+        right.to_path_buf(),
+        cfg.directory.exclude.clone(),
+    );
+    let mut first = Vec::new();
+    // With a terminal, don't hold the UI back for long; without one there is no UI
+    // to open, so wait for the whole scan to learn whether anything differs.
+    let wait = if std::io::stdout().is_terminal() {
+        std::time::Duration::from_millis(150)
+    } else {
+        std::time::Duration::from_secs(60 * 60 * 24)
+    };
+    let finished = scan.drain_for(wait, &mut first);
+    let any_difference = first
+        .iter()
+        .any(|m| matches!(m, Msg::Entry(e) if e.status.differs()));
+    if finished && !any_difference {
+        println!("identical");
+        return Ok(EXIT_OK);
+    }
+    require_terminal()?;
+    let view = ViewConfig {
+        tab_width: cfg.tab_width,
+        unified_below_columns: cfg.unified_below_columns,
+        force_unified: cli.unified,
+    };
+    let ws = if cli.ignore_all_space || cli.ignore_space_change {
+        cli.whitespace()
+    } else {
+        cfg.whitespace.into()
+    };
+    let show_identical = cli.show_identical || cfg.directory.show_identical;
+    let (l, r) = (left.to_path_buf(), right.to_path_buf());
+    let (ro_l, ro_r) = (cli.readonly_left, cli.readonly_right);
+    interactive(&cfg, move |theme, size| {
+        let dir = DirView::new(l, r, show_identical, scan, first);
+        let opts = ShellOptions {
+            theme,
+            view,
+            ws,
+            readonly_left: ro_l,
+            readonly_right: ro_r,
+        };
+        Shell::new(dir, opts, size)
     })
 }

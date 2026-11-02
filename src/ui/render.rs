@@ -97,7 +97,7 @@ pub fn text_width(app: &App) -> usize {
     }
 }
 
-fn put(buf: &mut Buffer, x: &mut u16, y: u16, max_x: u16, s: &str, style: Style) {
+pub(crate) fn put(buf: &mut Buffer, x: &mut u16, y: u16, max_x: u16, s: &str, style: Style) {
     if *x >= max_x {
         return;
     }
@@ -105,11 +105,11 @@ fn put(buf: &mut Buffer, x: &mut u16, y: u16, max_x: u16, s: &str, style: Style)
     *x = nx;
 }
 
-fn bold(style: Style) -> Style {
+pub(crate) fn bold(style: Style) -> Style {
     style.add_modifier(Modifier::BOLD)
 }
 
-fn key_style(t: &Theme) -> Style {
+pub(crate) fn key_style(t: &Theme) -> Style {
     bold(Style::default().fg(t.amber))
 }
 
@@ -127,7 +127,7 @@ fn match_style(t: &Theme, current: bool) -> Style {
     }
 }
 
-fn badge_style(t: &Theme) -> Style {
+pub(crate) fn badge_style(t: &Theme) -> Style {
     if t.no_color {
         Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
     } else {
@@ -592,7 +592,7 @@ fn draw_unified_row(buf: &mut Buffer, fr: &Frame1, area: Rect, y: u16, ri: usize
     );
 }
 
-fn hints(
+pub(crate) fn hints(
     buf: &mut Buffer,
     x: &mut u16,
     y: u16,
@@ -617,7 +617,7 @@ fn hints(
     }
 }
 
-fn hints_len(items: &[(&str, &str)]) -> u16 {
+pub(crate) fn hints_len(items: &[(&str, &str)]) -> u16 {
     items
         .iter()
         .map(|(k, d)| k.chars().count() + d.chars().count() + 1)
@@ -780,8 +780,13 @@ fn draw_status(buf: &mut Buffer, app: &App, area: Rect) {
 }
 
 fn draw_modal(buf: &mut Buffer, app: &App, area: Rect) {
-    let Some(m) = app.modal_text() else { return };
-    let t = &app.theme;
+    if let Some(m) = app.modal_text() {
+        draw_modal_panel(buf, &app.theme, area, &m);
+    }
+}
+
+/// The bottom panel used by every modal question.
+pub(crate) fn draw_modal_panel(buf: &mut Buffer, t: &Theme, area: Rect, m: &super::app::ModalText) {
     let height = (m.body.len() + 4).min(area.height as usize) as u16;
     let y0 = area.height - height;
     let panel = Style::default().bg(t.panel_bg);
@@ -920,7 +925,7 @@ fn draw_help(buf: &mut Buffer, app: &App, area: Rect) {
     );
 }
 
-fn thousands(n: usize) -> String {
+pub fn thousands(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {

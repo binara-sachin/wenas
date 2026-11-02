@@ -1,0 +1,23 @@
+---
+source: tests/dir.rs
+expression: body(&mut s)
+---
+
+  =  Cargo.toml
+  B  assets/logo.png                                     binary, differs at byte 2
+  T  config                                              file on left, directory on right
+  =  docs/architecture.md
+  L  docs/old-flow.md                                    only on left
+  R  src/auth/refresh.rs                                 only on right
+  M  src/auth/session.rs
+  M  src/auth/token.rs
+  =  src/main.rs
+
+
+
+
+
+
+
+
+ 9 files   6 differ  3 identical                                         Enter open  i hide identical  q quit

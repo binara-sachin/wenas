@@ -86,6 +86,10 @@ pub fn save(doc: &mut Document, force: bool) -> Result<(), SaveError> {
         return Err(SaveError::ChangedOnDisk);
     }
     let bytes = doc.to_bytes();
+    if let Some(parent) = real.parent().filter(|p| !p.as_os_str().is_empty()) {
+        // A file that exists only on the other side is created (with its folders).
+        std::fs::create_dir_all(parent)?;
+    }
     let dir = real
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

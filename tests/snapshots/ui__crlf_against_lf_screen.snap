@@ -1,0 +1,14 @@
+---
+source: tests/ui.rs
+expression: text(&mut a)
+---
+ a/windows.rs                                       windows.rs
+
+  1  fn a() {                                        1  fn a() {
+  2      one();                                      2      one();
+▎ 3      two();                                 ←~→▎ 3      TWO();
+  4  }                                               4  }
+
+
+
+ 1/1   whitespace off  CRLF | LF                   > copy to right  < copy to left  u undo  F1 help

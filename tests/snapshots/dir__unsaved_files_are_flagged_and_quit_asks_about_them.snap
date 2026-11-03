@@ -1,0 +1,23 @@
+---
+source: tests/dir.rs
+expression: body(&mut s)
+---
+
+  B  assets/logo.png                                     binary, differs at byte 2
+  T  config                                              file on left, directory on right
+  L  docs/old-flow.md                                    only on left
+  R  src/auth/refresh.rs                                 only on right
+  M  src/auth/session.rs                                 unsaved changes [+]
+  M  src/auth/token.rs                                   unsaved changes [+]
+
+
+
+
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 2 files have unsaved changes
+ src/auth/session.rs   1 edit
+ src/auth/token.rs   1 edit
+
+ w Save both and quit    Q Quit without saving    Esc Keep working

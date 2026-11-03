@@ -1,0 +1,24 @@
+---
+source: tests/ui.rs
+expression: text(&mut a)
+---
+ Keys                                                                               F1 or Esc close
+
+  Move                            Hunks                           Files
+  j k        line down, up        J K        next, previous       w          save
+  Ctrl-d u   half page            ]c [c      next, previous       e          open in $EDITOR
+  gg G       top, bottom          >          copy to right        q          quit
+  ← →        scroll sideways      <          copy to left         Q          quit, don't save
+  Tab        other pane           u          undo                 Ctrl-c     abort, exit 1
+                                  Ctrl-r     redo
+  Search
+  / ?        forward, back        View
+  n N        next, previous       v          switch view
+  Esc        clear matches        W          whitespace mode
+
+
+
+
+  When whitespace is ignored, whitespace-only changes are hidden and can't be copied.
+
+ 1/4   whitespace off  LF | LF

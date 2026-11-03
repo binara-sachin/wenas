@@ -137,7 +137,7 @@ The starting principle was to lean on standard system tools. Working through the
 | `diff` | Normalise each line for comparison (strip the line ending; apply `-w`/`-b`), intern lines into tokens, run `imara-diff` histogram, apply the indent heuristic (see S1), and produce a list of hunks. |
 | `align` | Turn hunks into rows: side-by-side rows with filler on the shorter side, or unified rows. Maps between file line numbers and screen rows. |
 | `inline` | For each changed block: pair old and new lines (one-to-one when counts match, otherwise by similarity), split them into words and punctuation, and diff the tokens with Myers. Skips lines over about 2,000 characters. Calculated lazily for hunks on screen and cached until the next re-diff. |
-| `dircmp` | Walk both trees in parallel (`ignore` or `jwalk`), match by relative path, classify (identical, modified, left-only, right-only, binary, type mismatch, symlink). Compare size first, then bytes in chunks, stopping at the first difference. Skip `.git/`. Don't follow symlinks; compare their targets. Ignore permission-only changes. |
+| `dircmp` | Walk both trees in parallel (`ignore` or `jwalk`), match by relative path, classify (identical, modified, left-only, right-only, binary, type mismatch, symlink). Compare size first, then bytes in chunks, stopping at the first difference. Skip `.git/`. Don't follow symlinks; compare their targets, except that a symlink opposite a regular file is followed (D32). Ignore permission-only changes. |
 | `ops` | Copy a hunk left→right or right→left (converting line endings to the target's), keep the undo/redo list, save. |
 | `editor` | Leave the alternate screen, run `$EDITOR +<line> <file>`, restore the terminal, reload the file, re-diff. Records one undo step from before/after snapshots. |
 | `ui` | `ratatui` + `crossterm`. File view (side-by-side and unified), directory view, status line, prompts, help. Theme detection and colour depth. Draws only visible rows. |
@@ -345,9 +345,9 @@ Sides read from stdin or a pipe are always read-only.
     tool = wenas
 [difftool]
     prompt = false
+    trustExitCode = true
 [difftool "wenas"]
     cmd = wenas "$LOCAL" "$REMOTE"
-    trustExitCode = true
 [alias]
     dd = difftool --dir-diff
 ```
@@ -361,10 +361,10 @@ Sides read from stdin or a pipe are always read-only.
 | Code | When |
 |---|---|
 | `0` | Normal quit, whether or not the sides differed; or the inputs were identical |
-| `1` | Aborted with `Ctrl-c` (with `trustExitCode = true`, git stops the rest of the run) |
+| `1` | Aborted with `Ctrl-c` (with `difftool.trustExitCode = true`, git stops the rest of a per-file run; in `--dir-diff` mode git makes a single call and ignores the exit code, so `Ctrl-c` simply ends the session) |
 | `2` | Error: unreadable file, mismatched argument types, output not a terminal, file over the size limit |
 
-- **Identical inputs:** print `identical` and exit `0` without opening the UI.
+- **Identical inputs (files):** print `identical` and exit `0` without opening the UI. Directories always open the list (D33).
 - **Output not a terminal:** exit `2` with a hint to use `git diff --no-index`.
 
 ## 9. Performance targets
@@ -442,6 +442,8 @@ exclude = [".git", "node_modules", "target"]
 show_identical = false
 ```
 
+Colour names accepted under `[colors]`, each as `#rrggbb`: `panel_bg`, `dim`, `muted`, `bright`, `amber`, `on_amber`, `cursor_bg`, `changed_bg`, `changed_word_bg`, `added_bg`, `added_word_bg`, `removed_bg`, `removed_word_bg`, `filler`, `added_fg`, `removed_fg`, `changed_fg`, `match_bg`, `match_fg`. Unknown names and malformed values warn and are ignored; overrides are ignored under `NO_COLOR` and follow the terminal's colour depth.
+
 Key remapping is planned for a later version.
 
 ## 12. Testing
@@ -475,8 +477,11 @@ CI runs on macOS and Linux.
 | ID | Question | Plan |
 |---|---|---|
 | **S1** | Does `imara-diff` support git's indent heuristic (or an equivalent post-processing hook)? | Check its API. If missing, port the heuristic from git's `xdiff` (a few hundred lines). If porting is impractical, fall back to running `git diff` for the first diff only. |
+| | **S1 answer (2026-11-02)** | Yes: `imara-diff` 0.2 provides `Diff::postprocess_lines` (indent heuristic). On 400 random line-pair inputs, 390 produced hunks identical to `git diff --no-index --histogram --indent-heuristic`; the rest are equally valid diffs placed differently on degenerate ties. All crafted realistic cases match exactly (`tests/engine.rs`). **Decision:** use `imara-diff` as is; no port, no `git` fallback. |
 | **S2** | Does the OSC 11 background query work inside tmux in Ghostty? | Test with your setup; if unreliable, default to `theme = "dark"` when `$TMUX` is set. |
+| | **S2 answer (2026-11-03)** | Not "default to dark under tmux": that penalises light-theme users in the main workflow. wenas sends the OSC 11 query followed by a DA1 query (`ESC [ c`). Terminals reply in order, so the DA1 reply marks the end of the exchange: if no background reply preceded it (tmux with nothing to forward, or a terminal that ignores OSC 11) the answer is "unknown" immediately and the theme falls back to dark, with no timeout and no late bytes left to be read as key presses. A silent terminal costs the 150 ms timeout. Verified with a pty that plays each terminal behaviour, with and without `$TMUX`. **Still to confirm by hand:** whether Ghostty + tmux forwards the real colour (RELEASING.md checklist). |
 | **S3** | How reliably can git's temporary sides be detected on macOS (`$TMPDIR` paths, `git-blob-*`, `git-difftool.*/left/`)? Does `--no-symlinks` mode still copy edits back? | Run both difftool modes and record the paths git passes; adjust detection rules and docs. |
+| | **S3 answer (2026-11-02, Linux, git 2.43)** | Single-file mode: `$LOCAL` is `<tmp>/git-blob-XXXXXX/<name>` (a *directory* named `git-blob-*`), `$REMOTE` is the working file as a relative path. `--dir-diff`: `<tmp>/git-difftool.XXXXXX/left/` and `.../right/`; the right side is symlinks into the working tree, or with `--no-symlinks` copies that git copies back after the tool exits. Edits land in the working tree in both modes. Rules in `src/gitenv.rs`: any `git-blob-*` path component, or `git-difftool.*` followed by `left`. **Correction to §8.2:** git ignores `trustExitCode` inside `[difftool "wenas"]`; only `difftool.trustExitCode` (or `--trust-exit-code`) makes a non-zero exit stop the run, so the snippet now sets it under `[difftool]`. macOS paths still to be checked (only `$TMPDIR` should differ). |
 | O1 | Is `wenas` free on Homebrew? | Free on crates.io (checked 2026-11-02); Homebrew not yet checked. |
 | O2 | Default tab width 4 or 8? | 4 for now (most code); revisit after daily use. |
 | O3 | Should a side with unsaved changes block `e`, or should wenas save automatically before handing off? | Ask in v1 (§7.3); revisit after use. |
@@ -515,3 +520,15 @@ CI runs on macOS and Linux.
 | D28 | Testing: unit, comparison with git, property, snapshot, integration, benchmarks. |
 | D29 | Name: `wenas`. |
 | D30 | `Esc` cancels a running diff or scan; `Ctrl-c` always aborts with exit 1. (Resolves a clash between D20 and D23.) |
+| D31 | Directory compare: one thread walks both trees in name order, a pool of up to 8 threads compares file contents, and a collector puts results back in order, so the list streams in sorted while the slow part (reading files) uses every core. A full scan of two 50k-file trees takes about 0.37 s on 4 cores (1.7 s single-threaded); the first result arrives in about 5 ms. |
+| D32 | A symlink opposite a regular file is compared through the link, because `git difftool --dir-diff` presents the working tree as symlinks. Two symlinks are still compared by target; a symlink to a directory is never followed. |
+| D33 | Directory mode always opens the list (§6.3), including when nothing differs (identical files are one `i` away); without a terminal it exits 2 immediately (§8.3). The `identical` early exit applies to files only. |
+| D34 | Files opened from the directory list keep their session (edits, undo) when you return to the list. Quit asks once about all of them; "save both" resolves disk conflicts file by file. |
+| D35 | Every diff goes through one policy (`DiffPolicy`): inputs up to 5,000 lines (both sides) are diffed inline, larger ones on a worker thread (`worker` module). After a 25 ms grace the session is *busy*; the screen shows "Comparing…" after 300 ms, and keys other than `Esc` and `Ctrl-c` are ignored. `Esc` abandons the diff and **undoes the operation that started it** (copy, undo, redo, `W`, editor reload, or leaving the file on a first diff), which is possible because each of those is exactly invertible, so the documents and hunks never disagree. `imara-diff` has no cancel hook, so an abandoned diff finishes in the background and its result is dropped (or ends with the process). Applies to first diffs, re-diffs, and files opened from the directory list. |
+| D36 | Files over 100 MB are confirmed first: on `[y/N]` at the terminal in file mode, with a panel in the directory view. Declining exits 0 with "skipped". With no terminal to ask on, the file is loaded. Files over 1 GB are refused (exit 2) without asking. |
+| D37 | The help screen uses three columns from 96 columns wide so that, with the editing keys, the whitespace note still fits a 24-row terminal. |
+| D38 | `⏎` marks an unterminated last line on either side. |
+| D39 | Release builds use the `dist` profile (fat LTO, stripped, `panic = "abort"` inherited from release); the static musl binary is about 1.5 MB. The minimum supported Rust is 1.88 (verified by building with it, and checked in CI). |
+| D40 | Licensed MIT OR Apache-2.0. |
+| D41 | Benchmarks live in `benches/engine.rs` (criterion) and CI reports them on a macOS runner against the §9 targets via `scripts/bench-summary.py`; they never fail the build. Measured on a 4-core Linux VM (the directory compare was 1.7 s before D31's pool, 0.37 s after), everything meets its target except the first screen for 100k-line files (about 380 ms against 200 ms), which is the cost of the histogram diff itself. |
+| D42 | Module layout follows §5.2: `document` owns loading and read-only state (`Access`, with a `ReadOnlyReason` so a read-only side always has a reason to show), `ops` owns undo/redo and saving, `editor` owns the `$EDITOR` handoff, `cli` maps outcomes to exit codes, `run` starts the right screen so `main` only parses arguments, and `worker` owns background jobs and their cancellation (diffs and the directory scan both use it). |

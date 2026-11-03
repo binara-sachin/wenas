@@ -1,0 +1,23 @@
+---
+source: tests/dir.rs
+expression: body(&mut s)
+---
+
+  B  assets/logo.png                                     binary, differs at byte 2
+  T  config                                              file on left, directory on right
+  L  docs/old-flow.md                                    only on left
+  R  src/auth/refresh.rs                                 only on right
+  M  src/auth/session.rs
+  M  src/auth/token.rs
+
+
+
+
+
+
+
+
+
+
+
+ 9 files   6 differ  3 identical                                         Enter open  i show identical  q quit

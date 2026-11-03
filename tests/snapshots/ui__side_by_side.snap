@@ -1,0 +1,24 @@
+---
+source: tests/ui.rs
+expression: "text(&mut app((100, 20)))"
+---
+ a/src/auth/token.rs  read-only                     src/auth/token.rs
+
+  1  impl Token {                                    1  impl Token {
+  2      pub fn is_expired(&self) -> bool {          2      pub fn is_expired(&self) -> bool {
+▎ 3          self.issued + self.ttl < now()      ~→▎ 3          self.issued + self.ttl <= now()
+  4      }                                           4      }
+  5                                                  5
+  6      /// Refresh the token if it has expire› ~   6      /// Refresh the token before it expires.
+  7      fn refresh(&self) -> Result {               7      fn refresh(&self) -> Result {
+  8          let ttl = self.ttl;                 ~   8          let ttl = self.ttl.max(60);
+░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ +   9          log::debug!("ttl={ttl}");
+  9          self.fetch(ttl)?;                      10          self.fetch(ttl)?;
+ 10          self.cache.clear();                 - ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+ 11          Ok(())                                 11          Ok(())
+ 12      }                                          12      }
+ 13  }                                              13  }
+
+
+
+ 1/4   whitespace off  LF | LF                                     > copy to right  u undo  F1 help

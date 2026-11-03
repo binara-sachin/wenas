@@ -11,14 +11,16 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, channel, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const CHUNK: usize = 64 * 1024;
 /// Report scan progress after this many files.
 const PROGRESS_EVERY: usize = 64;
+/// File pairs waiting for the pool; bounds memory while the walker runs ahead.
+const JOB_QUEUE: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
@@ -193,11 +195,34 @@ pub fn compare_files(a: &Path, b: &Path) -> io::Result<Status> {
     }
 }
 
+/// A pair of regular files to compare on the pool.
+struct Job {
+    seq: u64,
+    rel: PathBuf,
+    left: PathBuf,
+    right: PathBuf,
+}
+
+/// A finished entry tagged with its position in name order.
+type Done = (u64, Entry);
+
+/// What `both` decided about a pair that exists on both sides.
+enum Verdict {
+    Now(Status),
+    /// Two regular files: the expensive part, sent to the pool.
+    Compare,
+}
+
+/// Enumerates both trees together in name order. Cheap verdicts (one-sided,
+/// mismatches, symlinks) go straight to the collector; file comparisons go to
+/// the pool. Every item carries a sequence number so the collector can restore
+/// name order, which keeps the list sorted while it streams in.
 struct Walker<'a> {
     exclude: &'a [String],
     cancel: &'a AtomicBool,
-    emit: &'a mut dyn FnMut(Msg),
-    files: usize,
+    seq: u64,
+    jobs: SyncSender<Job>,
+    done: Sender<Done>,
 }
 
 impl Walker<'_> {
@@ -213,12 +238,25 @@ impl Walker<'_> {
                 .any(|e| name.to_str() == Some(e.as_str()))
     }
 
+    fn next_seq(&mut self) -> u64 {
+        self.seq += 1;
+        self.seq - 1
+    }
+
     fn entry(&mut self, rel: PathBuf, status: Status) {
-        self.files += 1;
-        (self.emit)(Msg::Entry(Entry { rel, status }));
-        if self.files.is_multiple_of(PROGRESS_EVERY) {
-            (self.emit)(Msg::Scanned(self.files));
-        }
+        let seq = self.next_seq();
+        // A closed channel means the UI went away; the walk just winds down.
+        let _ = self.done.send((seq, Entry { rel, status }));
+    }
+
+    fn compare_later(&mut self, rel: PathBuf, left: PathBuf, right: PathBuf) {
+        let seq = self.next_seq();
+        let _ = self.jobs.send(Job {
+            seq,
+            rel,
+            left,
+            right,
+        });
     }
 
     fn names(&self, dir: &Path) -> io::Result<BTreeMap<OsString, Kind>> {
@@ -289,47 +327,54 @@ impl Walker<'_> {
                 }
                 (Some(_), None) => Status::LeftOnly,
                 (None, Some(_)) => Status::RightOnly,
-                (Some(l), Some(r)) => self.both(l, r, &lp, &rp),
+                (Some(l), Some(r)) => match self.both(l, r, &lp, &rp) {
+                    Verdict::Now(status) => status,
+                    Verdict::Compare => {
+                        self.compare_later(rel, lp, rp);
+                        continue;
+                    }
+                },
                 (None, None) => continue,
             };
             self.entry(rel, status);
         }
     }
 
-    fn both(&self, l: Kind, r: Kind, lp: &Path, rp: &Path) -> Status {
+    fn both(&self, l: Kind, r: Kind, lp: &Path, rp: &Path) -> Verdict {
         let describe = |k: Kind| match k {
             Kind::File => "file",
             Kind::Dir => "directory",
             Kind::Symlink => "symlink",
             Kind::Other => "special file",
         };
-        let mismatch =
-            || Status::Mismatch(format!("{} on left, {} on right", describe(l), describe(r)));
-        let files = |a: &Path, b: &Path| match compare_files(a, b) {
-            Ok(s) => s,
-            Err(e) => Status::Error(read_error(&e)),
+        let mismatch = || {
+            Verdict::Now(Status::Mismatch(format!(
+                "{} on left, {} on right",
+                describe(l),
+                describe(r)
+            )))
         };
         match (l, r) {
-            (Kind::File, Kind::File) => files(lp, rp),
+            (Kind::File, Kind::File) => Verdict::Compare,
             (Kind::Symlink, Kind::Symlink) => {
                 let target = |p: &Path| fs::read_link(p).map(|t| t.display().to_string());
-                match (target(lp), target(rp)) {
+                Verdict::Now(match (target(lp), target(rp)) {
                     (Ok(a), Ok(b)) if a == b => Status::Identical,
                     (Ok(left), Ok(right)) => Status::SymlinkDiffers { left, right },
                     (Err(e), _) | (_, Err(e)) => Status::Error(read_error(&e)),
-                }
+                })
             }
             // `git difftool --dir-diff` hands over symlinks to working-tree
             // files, so a link opposite a regular file is followed.
             (Kind::File, Kind::Symlink) | (Kind::Symlink, Kind::File) => {
                 let link = if l == Kind::Symlink { lp } else { rp };
                 match fs::metadata(link) {
-                    Ok(m) if m.is_file() => files(lp, rp),
+                    Ok(m) if m.is_file() => Verdict::Compare,
                     Ok(_) => mismatch(),
-                    Err(e) => Status::Error(format!(
+                    Err(e) => Verdict::Now(Status::Error(format!(
                         "broken symlink: {}",
                         read_error(&e).trim_start_matches("can't read: ")
-                    )),
+                    ))),
                 }
             }
             _ => mismatch(),
@@ -337,7 +382,35 @@ impl Walker<'_> {
     }
 }
 
-/// Run the comparison to completion on this thread, sending messages to `emit`.
+/// A pool thread: take file pairs, compare them, report with their sequence number.
+fn pool_worker(jobs: &Mutex<Receiver<Job>>, done: Sender<Done>, cancel: &AtomicBool) {
+    loop {
+        // The lock is held only while waiting for the next job.
+        let Ok(job) = jobs.lock().unwrap().recv() else {
+            return;
+        };
+        if cancel.load(Ordering::Relaxed) {
+            continue; // drain the queue so the walker never blocks
+        }
+        let status = match compare_files(&job.left, &job.right) {
+            Ok(s) => s,
+            Err(e) => Status::Error(read_error(&e)),
+        };
+        let entry = Entry {
+            rel: job.rel,
+            status,
+        };
+        if done.send((job.seq, entry)).is_err() {
+            return;
+        }
+    }
+}
+
+/// Compare two trees, sending messages to `emit` on this thread in name order.
+///
+/// One thread walks, a pool compares file contents, and this thread puts the
+/// results back in order, so the list streams in sorted while the slow part
+/// (reading files) runs on every core.
 pub fn compare(
     left: &Path,
     right: &Path,
@@ -345,16 +418,49 @@ pub fn compare(
     cancel: &AtomicBool,
     emit: &mut dyn FnMut(Msg),
 ) {
-    let mut w = Walker {
-        exclude,
-        cancel,
-        emit,
-        files: 0,
-    };
-    w.walk(left, right, Path::new(""));
-    let n = w.files;
-    (w.emit)(Msg::Scanned(n));
-    (w.emit)(Msg::Done);
+    let threads = std::thread::available_parallelism()
+        .map_or(2, |n| n.get())
+        .clamp(2, 8);
+    let (job_tx, job_rx) = sync_channel::<Job>(JOB_QUEUE);
+    let job_rx = Mutex::new(job_rx);
+    let (done_tx, done_rx) = channel::<Done>();
+    let mut count = 0usize;
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            let done = done_tx.clone();
+            let jobs = &job_rx;
+            scope.spawn(move || pool_worker(jobs, done, cancel));
+        }
+        scope.spawn(move || {
+            let mut walker = Walker {
+                exclude,
+                cancel,
+                seq: 0,
+                jobs: job_tx,
+                done: done_tx,
+            };
+            walker.walk(left, right, Path::new(""));
+            // Dropping the walker closes both channels, which ends the pool.
+        });
+        let mut next = 0u64;
+        let mut pending: BTreeMap<u64, Entry> = BTreeMap::new();
+        'collect: for (seq, entry) in done_rx {
+            pending.insert(seq, entry);
+            while let Some(entry) = pending.remove(&next) {
+                next += 1;
+                count += 1;
+                emit(Msg::Entry(entry));
+                if count.is_multiple_of(PROGRESS_EVERY) {
+                    emit(Msg::Scanned(count));
+                }
+                if cancel.load(Ordering::Relaxed) {
+                    break 'collect;
+                }
+            }
+        }
+    });
+    emit(Msg::Scanned(count));
+    emit(Msg::Done);
 }
 
 /// A scan running on a worker thread.
@@ -470,6 +576,29 @@ mod tests {
         }
         let names: Vec<_> = scan(&l, &r).into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, ["a/b", "a/z", "b", "c"]);
+    }
+
+    #[test]
+    fn parallel_comparison_still_streams_in_name_order() {
+        // Early names are big (slow to compare) and late names tiny, so on a pool
+        // the later results finish first and must wait for the earlier ones.
+        let (_d, l, r) = trees();
+        let big = vec![b'x'; 3_000_000];
+        for i in 0..400 {
+            let name = format!("d{:02}/f{:03}", i / 40, i);
+            let size = if i < 12 { &big[..] } else { &b"small\n"[..] };
+            write(&l, &name, size);
+            write(&r, &name, size);
+        }
+        write(&r, "d00/f000", b"different");
+        let got = scan(&l, &r);
+        let names: Vec<_> = got.iter().map(|(n, _)| n.clone()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "entries must arrive in name order");
+        assert_eq!(got.len(), 400);
+        assert_eq!(got[0], ("d00/f000".to_string(), Status::Modified));
+        assert!(got[1..].iter().all(|(_, s)| *s == Status::Identical));
     }
 
     #[test]

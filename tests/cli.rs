@@ -82,7 +82,9 @@ fn git_config_sets_trust_exit_code_where_git_reads_it() {
 }
 
 #[test]
-fn identical_directories_exit_zero_without_the_ui() {
+fn directories_need_a_terminal_even_when_identical() {
+    // The directory list always opens (spec 6.3), so with no terminal to show it
+    // on there is nothing sensible to do but exit 2 at once (8.3).
     let d = tempfile::tempdir().unwrap();
     let (a, b) = (d.path().join("a"), d.path().join("b"));
     for root in [&a, &b] {
@@ -93,8 +95,8 @@ fn identical_directories_exit_zero_without_the_ui() {
         .arg(&a)
         .arg(&b)
         .assert()
-        .success()
-        .stdout("identical\n");
+        .code(2)
+        .stderr(predicates::str::contains("git diff --no-index"));
 }
 
 #[test]
@@ -111,27 +113,4 @@ fn differing_directories_without_a_terminal_exit_two() {
         .assert()
         .code(2)
         .stderr(predicates::str::contains("git diff --no-index"));
-}
-
-#[test]
-fn large_identical_directories_still_report_identical_without_a_terminal() {
-    // More files than a 150 ms look-ahead could cover on a slow machine: the
-    // non-terminal path must wait for the whole scan rather than give up.
-    let d = tempfile::tempdir().unwrap();
-    let (a, b) = (d.path().join("a"), d.path().join("b"));
-    for root in [&a, &b] {
-        for dir in 0..40 {
-            let p = root.join(format!("d{dir}"));
-            std::fs::create_dir_all(&p).unwrap();
-            for f in 0..100 {
-                std::fs::write(p.join(format!("f{f}")), format!("{dir}-{f}\n")).unwrap();
-            }
-        }
-    }
-    wenas()
-        .arg(&a)
-        .arg(&b)
-        .assert()
-        .success()
-        .stdout("identical\n");
 }

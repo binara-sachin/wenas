@@ -5,7 +5,7 @@
 use crate::cli::{Cli, EXIT_OK, exit_code};
 use crate::config::{self, Config};
 use crate::diff::{Whitespace, diff};
-use crate::dircmp::{Msg, Scan};
+use crate::dircmp::Scan;
 use crate::document::{Document, ReadOnlyReason};
 use crate::gitenv::mark_readonly;
 use crate::input::{self, read_input};
@@ -167,37 +167,23 @@ fn run_files(cli: &Cli, cfg: &Config, left: &Path, right: &Path) -> anyhow::Resu
     Ok(exit_code(outcome))
 }
 
-/// Directory mode. The scan starts immediately; if it finishes within a moment
-/// and found nothing, behave like identical files and never open the UI.
+/// Directory mode (spec §6.3). The list always opens, even when nothing differs:
+/// identical files can be shown with `i`, and results stream in while the scan
+/// runs. Without a terminal there is nothing to show, so it exits 2 right away
+/// (§8.3) rather than scanning first.
 fn run_dir(cli: &Cli, cfg: &Config, left: &Path, right: &Path) -> anyhow::Result<u8> {
+    require_terminal()?;
     let scan = Scan::spawn(
         left.to_path_buf(),
         right.to_path_buf(),
         cfg.directory.exclude.clone(),
     );
-    let mut first = Vec::new();
-    // With a terminal, don't hold the UI back for long; without one there is no UI
-    // to open, so wait for the whole scan to learn whether anything differs.
-    let wait = if std::io::stdout().is_terminal() {
-        std::time::Duration::from_millis(150)
-    } else {
-        std::time::Duration::from_secs(60 * 60 * 24)
-    };
-    let finished = scan.drain_for(wait, &mut first);
-    let any_difference = first
-        .iter()
-        .any(|m| matches!(m, Msg::Entry(e) if e.status.differs()));
-    if finished && !any_difference {
-        println!("identical");
-        return Ok(EXIT_OK);
-    }
-    require_terminal()?;
     let Settings { view, ws } = Settings::new(cli, cfg);
     let show_identical = cli.show_identical || cfg.directory.show_identical;
     let (l, r) = (left.to_path_buf(), right.to_path_buf());
     let (readonly_left, readonly_right) = (cli.readonly_left, cli.readonly_right);
     let outcome = run_interactive(cfg, move |theme, size| {
-        let dir = DirView::new(l, r, show_identical, scan, first);
+        let dir = DirView::new(l, r, show_identical, scan, Vec::new());
         let opts = ShellOptions {
             theme,
             view,

@@ -364,7 +364,7 @@ Sides read from stdin or a pipe are always read-only.
 | `1` | Aborted with `Ctrl-c` (with `difftool.trustExitCode = true`, git stops the rest of a per-file run; in `--dir-diff` mode git makes a single call and ignores the exit code, so `Ctrl-c` simply ends the session) |
 | `2` | Error: unreadable file, mismatched argument types, output not a terminal, file over the size limit |
 
-- **Identical inputs:** print `identical` and exit `0` without opening the UI.
+- **Identical inputs (files):** print `identical` and exit `0` without opening the UI. Directories always open the list (D33).
 - **Output not a terminal:** exit `2` with a hint to use `git diff --no-index`.
 
 ## 9. Performance targets
@@ -520,9 +520,9 @@ CI runs on macOS and Linux.
 | D28 | Testing: unit, comparison with git, property, snapshot, integration, benchmarks. |
 | D29 | Name: `wenas`. |
 | D30 | `Esc` cancels a running diff or scan; `Ctrl-c` always aborts with exit 1. (Resolves a clash between D20 and D23.) |
-| D31 | Directory compare runs on one worker thread that walks both trees together in name order and streams entries, rather than a parallel walker crate (no extra dependency; revisit if the 50k-file target is missed). |
+| D31 | Directory compare: one thread walks both trees in name order, a pool of up to 8 threads compares file contents, and a collector puts results back in order, so the list streams in sorted while the slow part (reading files) uses every core. A full scan of two 50k-file trees takes about 0.37 s on 4 cores (1.7 s single-threaded); the first result arrives in about 5 ms. |
 | D32 | A symlink opposite a regular file is compared through the link, because `git difftool --dir-diff` presents the working tree as symlinks. Two symlinks are still compared by target; a symlink to a directory is never followed. |
-| D33 | Directory mode waits up to 150 ms for the scan: if it has finished with no differences, print `identical` and exit 0 without opening the UI; otherwise open the list and keep streaming. |
+| D33 | Directory mode always opens the list (§6.3), including when nothing differs (identical files are one `i` away); without a terminal it exits 2 immediately (§8.3). The `identical` early exit applies to files only. |
 | D34 | Files opened from the directory list keep their session (edits, undo) when you return to the list. Quit asks once about all of them; "save both" resolves disk conflicts file by file. |
 | D35 | Inputs over 50,000 lines (both sides together) are diffed on a worker thread. After 300 ms the "Comparing…" screen appears; `Esc` leaves (exit 0) and the process exit ends the worker, because `imara-diff` has no cancel hook. Re-diffs after edits and `W` stay synchronous, and a file opened from the directory list is diffed on the UI thread. |
 | D36 | Files over 100 MB are confirmed first: on `[y/N]` at the terminal in file mode, with a panel in the directory view. Declining exits 0 with "skipped". With no terminal to ask on, the file is loaded. Files over 1 GB are refused (exit 2) without asking. |
@@ -530,5 +530,5 @@ CI runs on macOS and Linux.
 | D38 | `⏎` marks an unterminated last line on either side. |
 | D39 | Release builds use the `dist` profile (fat LTO, stripped, `panic = "abort"` inherited from release); the static musl binary is about 1.5 MB. The minimum supported Rust is 1.88 (verified by building with it, and checked in CI). |
 | D40 | Licensed MIT OR Apache-2.0. |
-| D41 | Benchmarks live in `benches/engine.rs` (criterion) and CI reports them on a macOS runner against the §9 targets via `scripts/bench-summary.py`; they never fail the build. Measured on a 4-core Linux VM, everything meets its target except the first screen for 100k-line files (about 380 ms against 200 ms), which is the cost of the histogram diff itself. |
+| D41 | Benchmarks live in `benches/engine.rs` (criterion) and CI reports them on a macOS runner against the §9 targets via `scripts/bench-summary.py`; they never fail the build. Measured on a 4-core Linux VM (the directory compare was 1.7 s before D31's pool, 0.37 s after), everything meets its target except the first screen for 100k-line files (about 380 ms against 200 ms), which is the cost of the histogram diff itself. |
 | D42 | Module layout follows §5.2: `document` owns loading and read-only state (`Access`, with a `ReadOnlyReason` so a read-only side always has a reason to show), `ops` owns undo/redo and saving, `editor` owns the `$EDITOR` handoff, `cli` maps outcomes to exit codes, and `run` starts the right screen so `main` only parses arguments. |

@@ -109,7 +109,7 @@ wenas [OPTIONS] <LEFT> <RIGHT>
 
 `-` reads one side from stdin. Sides read from stdin or a pipe are always read-only.
 
-**Exit codes:** `0` for a normal quit, or when the inputs are identical (it prints `identical` and exits without opening the UI). `1` when aborted with `Ctrl-c`. `2` for an error, such as an unreadable file, mismatched argument types, output that is not a terminal (use `git diff --no-index` for non-interactive diffs), or a file over 1 GB.
+**Exit codes:** `0` for a normal quit, or when two files are identical (it prints `identical` and exits without opening the UI; directories always open the list). `1` when aborted with `Ctrl-c`. `2` for an error, such as an unreadable file, mismatched argument types, output that is not a terminal (use `git diff --no-index` for non-interactive diffs), or a file over 1 GB.
 
 ## Configuration
 
@@ -151,8 +151,8 @@ These are goals to measure, not gates (see [the spec](docs/wenas-spec.md#9-perfo
 | First screen, 100k-line files | ≤ 200 ms | 381.90 ms | ⚠️ |
 | Copy a hunk and re-diff, 10k lines | ≤ 16 ms | 4.22 ms | ✅ |
 | One frame while scrolling, 100k lines | ≤ 16 ms | 0.57 ms | ✅ |
-| Directory compare, first result (50k files) | ≤ 100 ms | 2.24 ms | ✅ |
-| Directory compare, full scan (50k files) | streamed | 1.74 s | |
+| Directory compare, first result (50k files) | ≤ 100 ms | 4.68 ms | ✅ |
+| Directory compare, full scan (50k files) | streamed | 373.07 ms | |
 
 The one miss is the first screen for 100k-line files. Almost all of that time is the histogram diff itself (about 480 ms; imara-diff's Myers does the same input in 3 ms, and `git diff --histogram` takes over a second). Inputs over 50,000 lines are diffed in the background, with a progress screen and `Esc` to cancel, so a large file never freezes the terminal.
 

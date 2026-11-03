@@ -5,7 +5,7 @@ use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Color;
 use wenas::diff::Whitespace;
-use wenas::document::Document;
+use wenas::document::{Document, ReadOnlyReason};
 use wenas::ops::{Session, Side};
 use wenas::theme::{Depth, Theme};
 use wenas::ui::app::Modal;
@@ -23,7 +23,7 @@ fn app_with(left: &str, right: &str, size: (u16, u16), cfg: ViewConfig) -> App {
     let mut l = Document::from_bytes(left.into());
     let mut r = Document::from_bytes(right.into());
     l.label = Some("a/src/auth/token.rs".into());
-    l.readonly = true;
+    l.make_readonly(ReadOnlyReason::GitOldVersion);
     r.label = Some("src/auth/token.rs".into());
     App::new(Session::new(l, r, Whitespace::Off), theme(), cfg, size)
 }
@@ -295,14 +295,13 @@ fn readonly_side_controls_gutter_arrows() {
     // Left is read-only, so only the right-pointing arrow is offered.
     let s = text(&mut app((100, 20)));
     assert!(s.contains("~→") && !s.contains('←'), "{s}");
-    let mut l = Document::from_bytes(LEFT.into());
-    l.readonly = false;
+    let l = Document::from_bytes(LEFT.into());
     let mut a = app((100, 20));
     a.session.left = l;
     a.session.rediff();
     a.rebuild(None);
     assert!(text(&mut a).contains("←~→"));
-    assert!(!a.session.doc(Side::Left).readonly);
+    assert!(!a.session.doc(Side::Left).is_readonly());
 }
 
 #[test]
@@ -349,8 +348,8 @@ fn files_app(left: &str, right: &str) -> (tempfile::TempDir, App) {
     let (lp, rp) = (dir.path().join("left.rs"), dir.path().join("right.rs"));
     std::fs::write(&lp, left).unwrap();
     std::fs::write(&rp, right).unwrap();
-    let mut l = wenas::save::open(&lp).unwrap();
-    let mut r = wenas::save::open(&rp).unwrap();
+    let mut l = Document::open(&lp).unwrap();
+    let mut r = Document::open(&rp).unwrap();
     l.label = Some("left.rs".into());
     r.label = Some("right.rs".into());
     let app = App::new(
@@ -410,7 +409,7 @@ fn cursor_stays_on_the_same_logical_line_after_a_copy() {
 #[test]
 fn copy_into_readonly_side_is_refused_with_a_hint() {
     let mut a = app((100, 20));
-    a.session.left.readonly_note = Some("git's old version");
+    a.session.left.make_readonly(ReadOnlyReason::GitOldVersion);
     key(&mut a, '<');
     assert!(a.message_is_error);
     assert_eq!(
@@ -426,9 +425,12 @@ fn copy_into_readonly_side_is_refused_with_a_hint() {
 #[test]
 fn copy_with_both_sides_readonly_gives_no_alternative() {
     let mut a = app((100, 20));
-    a.session.right.readonly = true;
+    a.session.right.make_readonly(ReadOnlyReason::FlagRight);
     key(&mut a, '>');
-    assert_eq!(a.message.as_deref(), Some("The right side is read-only."));
+    assert_eq!(
+        a.message.as_deref(),
+        Some("The right side is marked --readonly-right, so it's read-only.")
+    );
 }
 
 #[test]

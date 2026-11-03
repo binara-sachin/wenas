@@ -399,8 +399,7 @@ proptest! {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("right.bin");
         std::fs::write(&path, &right).unwrap();
-        let mut r = wenas::save::open(&path).unwrap();
-        r.readonly = false;
+        let r = Document::open(&path).unwrap();
         let original: Vec<Vec<u8>> = (0..r.len()).map(|i| r.raw_line(i).to_vec()).collect();
         let mut s = Session::new(doc(&left), r, Whitespace::Off);
         prop_assume!(!s.hunks.is_empty());

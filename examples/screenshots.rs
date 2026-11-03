@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 use wenas::diff::Whitespace;
 use wenas::dircmp::Scan;
-use wenas::document::Document;
+use wenas::document::{Document, ReadOnlyReason};
 use wenas::ops::Session;
 use wenas::theme::{Depth, Theme};
 use wenas::ui::dir::DirView;
@@ -116,7 +116,7 @@ fn file_app(size: (u16, u16)) -> App {
     let mut l = Document::from_bytes(OLD.into());
     let mut r = Document::from_bytes(new_version().into());
     l.label = Some("a/src/auth/token.rs".into());
-    l.readonly = true;
+    l.make_readonly(ReadOnlyReason::GitOldVersion);
     r.label = Some("src/auth/token.rs".into());
     App::new(
         Session::new(l, r, Whitespace::Off),

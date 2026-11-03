@@ -1,8 +1,12 @@
 //! Terminal setup and the event loop.
 
-use super::app::{App, EditorRequest, Outcome};
+use super::app::{App, Outcome};
 use super::render;
+use crate::config::Config;
+use crate::editor::{EditorRequest, resolve_editor, spawn_editor};
+use crate::input;
 use crate::ops::Side;
+use crate::theme::{Depth, Theme, resolve_dark};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, Event};
@@ -10,7 +14,9 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode, size,
 };
+use std::io::IsTerminal;
 use std::io::{self, Stdout};
+use std::path::Path;
 use std::time::Duration;
 
 /// Restores the terminal when dropped, including on panic unwinding.
@@ -109,37 +115,6 @@ pub fn run_loop<U: Ui>(
     }
 }
 
-/// `$EDITOR`, then `$VISUAL`, then `vi` (spec §7.3).
-pub fn resolve_editor() -> String {
-    let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-    get("EDITOR")
-        .or_else(|| get("VISUAL"))
-        .unwrap_or_else(|| "vi".into())
-}
-
-/// `<editor> +<line> <file>`. Run through `sh` so editors configured with
-/// arguments (`code -w`) work; the file and line are passed as real arguments,
-/// never interpolated into the command string.
-pub fn editor_command(editor: &str, req: &EditorRequest) -> std::process::Command {
-    let mut cmd = std::process::Command::new("sh");
-    cmd.arg("-c")
-        .arg(format!("{editor} \"$@\""))
-        .arg("wenas")
-        .arg(format!("+{}", req.line))
-        .arg(&req.path);
-    cmd
-}
-
-/// Run the editor to completion. `Ok(true)` when it exited successfully.
-pub fn spawn_editor(editor: &str, req: &EditorRequest) -> Result<bool, String> {
-    let mut cmd = editor_command(editor, req);
-    // wenas's own stdin may be a pipe (`-` as an input); the editor needs the terminal.
-    if let Ok(tty) = std::fs::File::open("/dev/tty") {
-        cmd.stdin(tty);
-    }
-    cmd.status().map(|s| s.success()).map_err(|e| e.to_string())
-}
-
 fn with_terminal_suspended<T>(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     f: impl FnOnce() -> T,
@@ -153,51 +128,68 @@ fn with_terminal_suspended<T>(
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ops::Side;
+/// Raw mode, theme detection, alternate screen, event loop, restore.
+pub fn run_interactive<U: Ui>(
+    cfg: &Config,
+    build: impl FnOnce(Theme, (u16, u16)) -> U,
+) -> anyhow::Result<Outcome> {
+    let guard = TerminalGuard::raw()?;
+    // The background query must run in raw mode but before the alternate screen.
+    let dark = resolve_dark(cfg.theme);
+    let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    let depth = Depth::detect();
+    let mut theme = Theme::new(dark, depth, no_color);
+    theme.apply_overrides(&cfg.colors, depth);
+    let mut terminal = guard.enter_screen()?;
+    let mut ui = build(theme, terminal_size());
+    let outcome = run_loop(&mut terminal, &mut ui);
+    drop(terminal);
+    drop(guard);
+    Ok(outcome?)
+}
 
-    fn req(line: usize, path: &str) -> EditorRequest {
-        EditorRequest {
-            side: Side::Right,
-            line,
-            path: path.into(),
+/// Ask before loading anything over 100 MB (spec §9). Files over 1 GB are
+/// refused outright. Returns false when the user declines.
+pub fn confirm_large_files(paths: &[&Path]) -> anyhow::Result<bool> {
+    let mut large = Vec::new();
+    for p in paths {
+        if let input::SizeCheck::Large(n) =
+            input::check_size(p, input::LARGE_FILE_BYTES, input::MAX_FILE_BYTES)?
+        {
+            large.push((p, n));
         }
     }
-
-    #[test]
-    fn editor_command_passes_line_and_path_as_arguments() {
-        let cmd = editor_command("nvim", &req(41, "it's a file; rm -rf x.rs"));
-        let args: Vec<_> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            args,
-            [
-                "-c",
-                "nvim \"$@\"",
-                "wenas",
-                "+41",
-                "it's a file; rm -rf x.rs"
-            ]
-        );
+    if large.is_empty() {
+        return Ok(true);
     }
-
-    #[test]
-    fn editor_runs_with_arguments_and_reports_status() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("f.txt");
-        std::fs::write(&file, "a\n").unwrap();
-        let r = req(3, file.to_str().unwrap());
-        // An "editor" with its own arguments that records what it was given.
-        let ed = "sh -c 'echo \"$1 $2\" >> \"$2\"' ed";
-        assert_eq!(spawn_editor(ed, &r), Ok(true));
-        assert_eq!(
-            std::fs::read_to_string(&file).unwrap(),
-            format!("a\n+3 {}\n", file.display())
-        );
-        assert_eq!(spawn_editor("false", &r), Ok(false));
+    if !io::stdout().is_terminal() {
+        // Nothing to ask and nothing to show; scripts get the plain behaviour.
+        return Ok(true);
     }
+    let list: Vec<String> = large
+        .iter()
+        .map(|(p, n)| format!("{} ({})", p.display(), input::human_size(*n)))
+        .collect();
+    let prompt = format!(
+        "wenas: {} is large; loading may be slow. Load it anyway? [y/N] ",
+        list.join(", ")
+    );
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "{} is large and there is no terminal to ask on",
+                list.join(", ")
+            )
+        })?;
+    use std::io::{BufRead, Write};
+    tty.write_all(prompt.as_bytes())?;
+    let mut answer = String::new();
+    io::BufReader::new(&tty).read_line(&mut answer)?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }

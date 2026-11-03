@@ -58,6 +58,32 @@ impl Cli {
     }
 }
 
+/// Exit codes (spec §8.3).
+pub const EXIT_OK: u8 = 0;
+pub const EXIT_ABORT: u8 = 1;
+pub const EXIT_ERROR: u8 = 2;
+
+/// Map how the UI ended to an exit code.
+pub fn exit_code(outcome: crate::ui::Outcome) -> u8 {
+    use crate::ui::Outcome;
+    match outcome {
+        Outcome::Abort => EXIT_ABORT,
+        // `Back` and `QuitAsk` are handled inside the directory shell.
+        Outcome::Quit | Outcome::Back | Outcome::QuitAsk => EXIT_OK,
+    }
+}
+
+/// Turn a run's result into an exit code, reporting an error on stderr.
+pub fn finish(result: anyhow::Result<u8>) -> u8 {
+    match result {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("wenas: {e:#}");
+            EXIT_ERROR
+        }
+    }
+}
+
 pub const GIT_CONFIG: &str = r#"[diff]
     tool = wenas
 [difftool]

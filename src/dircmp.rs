@@ -5,7 +5,7 @@
 //! are compared by size where that settles it, otherwise in chunks, stopping at
 //! the first differing byte.
 
-use crate::input::{BINARY_SNIFF_LEN, has_utf16_bom, is_binary};
+use crate::input::{BINARY_SNIFF_LEN, looks_binary};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
@@ -146,7 +146,7 @@ pub fn compare_files(a: &Path, b: &Path) -> io::Result<Status> {
     let (mut ha, mut hb) = (vec![0u8; BINARY_SNIFF_LEN], vec![0u8; BINARY_SNIFF_LEN]);
     let (na, nb) = (read_fully(&mut fa, &mut ha)?, read_fully(&mut fb, &mut hb)?);
     let (ha, hb) = (&ha[..na], &hb[..nb]);
-    let binary = [ha, hb].iter().any(|h| is_binary(h) || has_utf16_bom(h));
+    let binary = looks_binary(ha) || looks_binary(hb);
     if size_a != size_b && !binary {
         return Ok(Status::Modified);
     }

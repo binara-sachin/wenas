@@ -2,10 +2,10 @@
 
 use crate::align::{self, Row, RowKind};
 use crate::document::DiskId;
+use crate::editor::EditorRequest;
 use crate::inline::{Inline, inline_diff};
 use crate::input::EolStyle;
-use crate::ops::{Dir, EditLoc, OpError, Session, Side};
-use crate::save::SaveError;
+use crate::ops::{Dir, EditLoc, OpError, SaveError, Session, Side};
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::HashMap;
@@ -68,19 +68,24 @@ pub enum Modal {
     SaveFirst { side: Side },
 }
 
-/// What the event loop must do outside the UI: run `$EDITOR`, then call `finish_editor`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EditorRequest {
-    pub side: Side,
-    pub line: usize,
-    pub path: std::path::PathBuf,
-}
-
 /// Text for the bottom panel of a modal.
 pub struct ModalText {
     pub title: String,
     pub body: Vec<String>,
     pub hints: Vec<(&'static str, &'static str)>,
+}
+
+impl BinaryInfo {
+    /// For two buffers that are already in memory.
+    pub fn from_bytes(name: String, left: &[u8], right: &[u8]) -> BinaryInfo {
+        BinaryInfo {
+            name,
+            left_size: left.len(),
+            right_size: right.len(),
+            first_difference: Some(crate::input::first_difference(left, right).unwrap_or(0)),
+            utf16: crate::input::has_utf16_bom(left) || crate::input::has_utf16_bom(right),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -678,7 +683,7 @@ impl App {
                     Side::Left
                 };
                 let mut msg = format!("The {name} side {} read-only.", self.readonly_reason(side));
-                if !self.session.doc(other).readonly {
+                if !self.session.doc(other).is_readonly() {
                     msg.push_str(&format!(" Press {other_key} to copy {other_name} instead."));
                 }
                 self.error(msg);
@@ -689,8 +694,8 @@ impl App {
 
     /// "is git's old version, so it's" or just "is", to precede "read-only".
     fn readonly_reason(&self, side: Side) -> String {
-        match self.session.doc(side).readonly_note {
-            Some(n) => format!("is {n}, so it's"),
+        match self.session.doc(side).readonly_reason() {
+            Some(reason) => format!("is {}, so it's", reason.describe()),
             None => "is".into(),
         }
     }
@@ -918,7 +923,7 @@ impl App {
         let side = self.focus;
         let doc = self.session.doc(side);
         let name = self.side_name(side);
-        if doc.readonly {
+        if doc.is_readonly() {
             let which = if side == Side::Left { "left" } else { "right" };
             let why = self.readonly_reason(side);
             self.error(format!(

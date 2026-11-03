@@ -2,8 +2,9 @@
 
 use crate::diff::{Hunk, Whitespace, diff};
 use crate::document::{DiskId, Document, Span};
-use crate::save::{self, SaveError};
 use std::fmt;
+use std::io::Write;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -34,6 +35,81 @@ impl fmt::Display for OpError {
     }
 }
 impl std::error::Error for OpError {}
+
+#[derive(Debug)]
+pub enum SaveError {
+    ReadOnly,
+    NoPath,
+    /// The file changed on disk since it was loaded; the caller must ask
+    /// whether to reload, overwrite (`force`) or cancel.
+    ChangedOnDisk,
+    Io(std::io::Error),
+}
+
+impl fmt::Display for SaveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SaveError::ReadOnly => write!(f, "this side is read-only"),
+            SaveError::NoPath => write!(f, "no file to save to"),
+            SaveError::ChangedOnDisk => write!(f, "file changed on disk"),
+            SaveError::Io(e) => write!(f, "{e}"),
+        }
+    }
+}
+impl std::error::Error for SaveError {}
+impl From<std::io::Error> for SaveError {
+    fn from(e: std::io::Error) -> Self {
+        SaveError::Io(e)
+    }
+}
+
+fn changed_on_disk(real: &Path, known: &DiskId) -> std::io::Result<bool> {
+    let meta = match std::fs::metadata(real) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    if meta.len() == known.size && meta.modified().ok() == known.mtime {
+        return Ok(false);
+    }
+    let bytes = std::fs::read(real)?;
+    Ok(DiskId::of_bytes(&bytes, None).hash != known.hash || bytes.len() as u64 != known.size)
+}
+
+fn write_document(doc: &mut Document, force: bool) -> Result<(), SaveError> {
+    if doc.is_readonly() {
+        return Err(SaveError::ReadOnly);
+    }
+    let path = doc.path.clone().ok_or(SaveError::NoPath)?;
+    let real = match std::fs::canonicalize(&path) {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => path.clone(),
+        Err(e) => return Err(e.into()),
+    };
+    if !force
+        && let Some(known) = doc.disk_id()
+        && changed_on_disk(&real, known)?
+    {
+        return Err(SaveError::ChangedOnDisk);
+    }
+    let bytes = doc.to_bytes();
+    let dir = real
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    // A file that exists only on the other side is created, with its folders.
+    std::fs::create_dir_all(dir)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(&bytes)?;
+    tmp.as_file().sync_all()?;
+    if let Ok(meta) = std::fs::metadata(&real) {
+        std::fs::set_permissions(tmp.path(), meta.permissions())?;
+    }
+    tmp.persist(&real).map_err(|e| e.error)?;
+    let mtime = std::fs::metadata(&real).and_then(|m| m.modified()).ok();
+    doc.mark_saved(DiskId::of_bytes(&bytes, mtime));
+    Ok(())
+}
 
 /// Where an undo or redo landed, so the UI can move the cursor there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +194,7 @@ impl Session {
             Dir::LeftToRight => (Side::Left, Side::Right, hunk.left, hunk.right),
             Dir::RightToLeft => (Side::Right, Side::Left, hunk.right, hunk.left),
         };
-        if self.doc(dst_side).readonly {
+        if self.doc(dst_side).is_readonly() {
             return Err(OpError::ReadOnly(dst_side));
         }
 
@@ -226,7 +302,7 @@ impl Session {
     pub fn replace_content(&mut self, side: Side, bytes: &[u8], disk: DiskId) -> bool {
         let state_after = self.next_state;
         let doc = self.doc_mut(side);
-        doc.disk = Some(disk);
+        doc.set_disk_id(Some(disk));
         if doc.to_bytes() == bytes {
             return false;
         }
@@ -248,8 +324,12 @@ impl Session {
         true
     }
 
+    /// Save one side to its path (spec §7.4). Follows symlinks so the real file
+    /// is written, writes a temp file beside it, fsyncs, copies permissions and
+    /// renames over the original. Unless `force`, refuses with `ChangedOnDisk`
+    /// when the file changed since it was loaded.
     pub fn save(&mut self, side: Side, force: bool) -> Result<(), SaveError> {
-        save::save(self.doc_mut(side), force)
+        write_document(self.doc_mut(side), force)
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -260,6 +340,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::ReadOnlyReason;
 
     fn session(a: &str, b: &str) -> Session {
         Session::new(
@@ -294,7 +375,7 @@ mod tests {
     #[test]
     fn readonly_target_is_refused() {
         let mut s = session("a\n", "b\n");
-        s.right.readonly = true;
+        s.right.make_readonly(ReadOnlyReason::FlagRight);
         assert_eq!(
             s.copy_hunk(0, Dir::LeftToRight),
             Err(OpError::ReadOnly(Side::Right))
@@ -375,5 +456,84 @@ mod tests {
         s.copy_hunk(0, Dir::RightToLeft).unwrap();
         assert!(!s.can_redo());
         assert_eq!(s.left.to_bytes(), b"1\nx\n");
+    }
+
+    fn file_session(path: &Path) -> Session {
+        Session::new(
+            Document::open(path).unwrap(),
+            Document::from_bytes(Vec::new()),
+            Whitespace::Off,
+        )
+    }
+
+    #[test]
+    fn saves_atomically_and_detects_external_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f.txt");
+        std::fs::write(&p, "a\nb\n").unwrap();
+        let mut s = file_session(&p);
+        s.save(Side::Left, false).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"a\nb\n");
+
+        std::fs::write(&p, "changed\n").unwrap();
+        assert!(matches!(
+            s.save(Side::Left, false),
+            Err(SaveError::ChangedOnDisk)
+        ));
+        s.save(Side::Left, true).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"a\nb\n");
+    }
+
+    #[test]
+    fn saving_creates_missing_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("new/deeper/f.txt");
+        let mut s = Session::new(
+            Document::from_bytes(b"x\n".to_vec()),
+            Document::empty_at(&p),
+            Whitespace::Off,
+        );
+        s.copy_hunk(0, Dir::LeftToRight).unwrap();
+        s.save(Side::Right, false).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"x\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn follows_symlinks_and_keeps_permissions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.txt");
+        let link = dir.path().join("link.txt");
+        std::fs::write(&real, "x\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o750)).unwrap();
+        symlink(&real, &link).unwrap();
+        let mut s = file_session(&link);
+        let span = s.left.append(b"y\n");
+        let n = s.left.len();
+        s.left.splice(n..n, &[span]);
+        s.save(Side::Left, false).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(&real).unwrap(), b"x\ny\n");
+        assert_eq!(
+            std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+            0o750
+        );
+    }
+
+    #[test]
+    fn read_only_sides_refuse_to_save() {
+        let mut s = session("a", "b");
+        s.left.make_readonly(ReadOnlyReason::GitOldVersion);
+        assert!(matches!(
+            s.save(Side::Left, false),
+            Err(SaveError::ReadOnly)
+        ));
+        assert!(matches!(s.save(Side::Right, false), Err(SaveError::NoPath)));
     }
 }

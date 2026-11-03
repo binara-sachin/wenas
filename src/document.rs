@@ -4,8 +4,8 @@
 //! span list; inserted text is appended to the store. Concatenating the spans
 //! reproduces the file, so untouched bytes are written back unchanged.
 
-use crate::input::{Eol, EolStyle};
-use std::path::PathBuf;
+use crate::input::{self, Eol, EolStyle, Loaded, Source};
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,16 +41,48 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     h
 }
 
+/// Why a side cannot be edited. Carried with the access so a read-only side
+/// always has a reason to show when a copy into it is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadOnlyReason {
+    /// The old-version copy git hands to a difftool.
+    GitOldVersion,
+    /// Read from stdin or a pipe.
+    Stream,
+    /// Forced with `--readonly-left`.
+    FlagLeft,
+    /// Forced with `--readonly-right`.
+    FlagRight,
+}
+
+impl ReadOnlyReason {
+    /// A short phrase for messages: "The left side is <phrase>, so it's read-only."
+    pub fn describe(self) -> &'static str {
+        match self {
+            ReadOnlyReason::GitOldVersion => "git's old version",
+            ReadOnlyReason::Stream => "stdin or a pipe",
+            ReadOnlyReason::FlagLeft => "marked --readonly-left",
+            ReadOnlyReason::FlagRight => "marked --readonly-right",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Access {
+    #[default]
+    Writable,
+    ReadOnly(ReadOnlyReason),
+}
+
 #[derive(Debug, Clone)]
 pub struct Document {
     store: Vec<u8>,
     lines: Vec<Span>,
     pub path: Option<PathBuf>,
     pub label: Option<String>,
-    pub readonly: bool,
-    /// Why the side is read-only, for the refusal message (e.g. "git's old version").
-    pub readonly_note: Option<&'static str>,
-    pub disk: Option<DiskId>,
+    access: Access,
+    /// What the file looked like on disk when loaded or last saved.
+    disk: Option<DiskId>,
     /// Identifies the current content; equal to `saved_state` means "clean".
     pub(crate) state: u64,
     pub(crate) saved_state: u64,
@@ -79,12 +111,68 @@ impl Document {
             lines,
             path: None,
             label: None,
-            readonly: false,
-            readonly_note: None,
+            access: Access::Writable,
             disk: None,
             state: 0,
             saved_state: 0,
         }
+    }
+
+    /// Build a document from already-read input. Streams are always read-only.
+    pub fn from_loaded(loaded: Loaded, path: Option<&Path>) -> Document {
+        let is_file = loaded.source == Source::File;
+        let mtime = path
+            .filter(|_| is_file)
+            .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+        let disk = is_file.then(|| DiskId::of_bytes(&loaded.bytes, mtime));
+        let mut doc = Document::from_bytes(loaded.bytes);
+        if !is_file {
+            doc.access = Access::ReadOnly(ReadOnlyReason::Stream);
+        }
+        doc.disk = disk;
+        doc.path = path.map(Path::to_path_buf);
+        doc
+    }
+
+    /// Read a path (or `-` for stdin) into a document.
+    pub fn open(path: &Path) -> anyhow::Result<Document> {
+        Ok(Document::from_loaded(input::read_input(path)?, Some(path)))
+    }
+
+    /// An empty document for a file that exists only on the other side; it is
+    /// created when saved.
+    pub fn empty_at(path: &Path) -> Document {
+        let mut doc = Document::from_bytes(Vec::new());
+        doc.path = Some(path.to_path_buf());
+        doc
+    }
+
+    pub fn access(&self) -> Access {
+        self.access
+    }
+    pub fn is_readonly(&self) -> bool {
+        matches!(self.access, Access::ReadOnly(_))
+    }
+    pub fn readonly_reason(&self) -> Option<ReadOnlyReason> {
+        match self.access {
+            Access::ReadOnly(r) => Some(r),
+            Access::Writable => None,
+        }
+    }
+    pub fn make_readonly(&mut self, reason: ReadOnlyReason) {
+        self.access = Access::ReadOnly(reason);
+    }
+
+    pub fn disk_id(&self) -> Option<&DiskId> {
+        self.disk.as_ref()
+    }
+    pub fn set_disk_id(&mut self, disk: Option<DiskId>) {
+        self.disk = disk;
+    }
+    /// The current content is now what is on disk.
+    pub fn mark_saved(&mut self, disk: DiskId) {
+        self.disk = Some(disk);
+        self.saved_state = self.state;
     }
 
     pub fn len(&self) -> usize {

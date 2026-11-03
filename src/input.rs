@@ -51,6 +51,12 @@ pub fn is_binary(bytes: &[u8]) -> bool {
     memchr::memchr(0, &bytes[..bytes.len().min(BINARY_SNIFF_LEN)]).is_some()
 }
 
+/// Binary as far as wenas is concerned: a NUL byte near the start, or a UTF-16
+/// byte-order mark (v1 does not decode UTF-16, spec D24).
+pub fn looks_binary(bytes: &[u8]) -> bool {
+    is_binary(bytes) || has_utf16_bom(bytes)
+}
+
 /// UTF-16 byte-order mark. v1 treats these as binary (spec D24).
 pub fn has_utf16_bom(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF])

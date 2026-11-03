@@ -2,11 +2,12 @@
 //! a moment. `Esc` cancels (spec §10, §7.1). When the diff arrives it becomes
 //! the normal file view.
 
-use super::app::{App, EditorRequest, Outcome, ViewConfig};
+use super::app::{App, Outcome, ViewConfig};
 use super::render::{self, bold, hints, put, thousands};
 use super::term::Ui;
 use crate::diff::{Hunk, Whitespace};
 use crate::document::Document;
+use crate::editor::EditorRequest;
 use crate::ops::{Session, Side};
 use crate::theme::Theme;
 use ratatui::Frame;

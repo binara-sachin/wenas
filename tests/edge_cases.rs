@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use wenas::diff::{Whitespace, diff};
-use wenas::document::Document;
+use wenas::document::{Document, ReadOnlyReason};
 use wenas::ops::{Dir, Session, Side};
 use wenas::theme::{Depth, Theme};
 use wenas::ui::loading::Loading;
@@ -499,8 +499,9 @@ fn stdin_and_named_pipes_are_read_in_full_and_are_read_only() {
         bytes: b"a\n".to_vec(),
         source: wenas::input::Source::Stream,
     };
-    let streamed = wenas::save::document_from_loaded(loaded, Some(std::path::Path::new("-")));
-    assert!(streamed.readonly && streamed.disk.is_none());
+    let streamed = Document::from_loaded(loaded, Some(std::path::Path::new("-")));
+    assert_eq!(streamed.readonly_reason(), Some(ReadOnlyReason::Stream));
+    assert!(streamed.disk_id().is_none());
     let mut s = Session::new(streamed, doc(b"b\n"), Whitespace::Off);
     assert!(s.copy_hunk(0, Dir::RightToLeft).is_err());
     assert!(s.save(Side::Left, false).is_err());

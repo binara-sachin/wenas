@@ -3,17 +3,17 @@
 //! Opened files keep their state (edits, undo history) when you go back to the
 //! list, so a whole directory can be worked through and saved together.
 
-use super::app::{App, BinaryInfo, EditorRequest, ModalText, Outcome, ViewConfig};
+use super::app::{App, BinaryInfo, ModalText, Outcome, ViewConfig};
 use super::dir::{DirAction, DirView, draw_dir};
 use super::render;
 use super::term::Ui;
 use crate::diff::Whitespace;
 use crate::dircmp::Status;
-use crate::document::Document;
+use crate::document::{Document, ReadOnlyReason};
+use crate::editor::EditorRequest;
 use crate::gitenv::mark_readonly;
-use crate::input::{self, Loaded, Source, read_input};
+use crate::input::{self, read_input};
 use crate::ops::{Session, Side};
-use crate::save::document_from_loaded;
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -70,23 +70,17 @@ impl Shell {
         base: &Path,
         rel: &Path,
         exists: bool,
-        forced: Option<&'static str>,
+        forced: Option<ReadOnlyReason>,
     ) -> Result<Document, String> {
         let path = base.join(rel);
         let mut doc = if exists {
-            let loaded = read_input(&path).map_err(|e| format!("{e:#}"))?;
-            document_from_loaded(loaded, Some(&path))
+            Document::from_loaded(
+                read_input(&path).map_err(|e| format!("{e:#}"))?,
+                Some(&path),
+            )
         } else {
             // Only on the other side: an empty pane, created on save.
-            let mut d = document_from_loaded(
-                Loaded {
-                    bytes: vec![],
-                    source: Source::File,
-                },
-                Some(&path),
-            );
-            d.disk = None;
-            d
+            Document::empty_at(&path)
         };
         mark_readonly(&mut doc, &path, forced);
         Ok(doc)
@@ -118,35 +112,33 @@ impl Shell {
             status => {
                 let left_exists = *status != Status::RightOnly;
                 let right_exists = *status != Status::LeftOnly;
-                let flag = |on: bool, name: &'static str| on.then_some(name);
                 let mut l = self.load_side(
                     &self.dir.left,
                     &rel,
                     left_exists,
-                    flag(self.opts.readonly_left, "marked --readonly-left"),
+                    self.opts.readonly_left.then_some(ReadOnlyReason::FlagLeft),
                 )?;
                 let mut r = self.load_side(
                     &self.dir.right,
                     &rel,
                     right_exists,
-                    flag(self.opts.readonly_right, "marked --readonly-right"),
+                    self.opts
+                        .readonly_right
+                        .then_some(ReadOnlyReason::FlagRight),
                 )?;
                 let sniff = |d: &Document| {
                     let head: Vec<u8> = (0..d.len().min(256))
                         .flat_map(|i| d.raw_line(i).to_vec())
                         .take(input::BINARY_SNIFF_LEN)
                         .collect();
-                    input::is_binary(&head) || input::has_utf16_bom(&head)
+                    input::looks_binary(&head)
                 };
                 if sniff(&l) || sniff(&r) {
-                    let (lb, rb) = (l.to_bytes(), r.to_bytes());
-                    let info = BinaryInfo {
-                        name: rel.display().to_string(),
-                        left_size: lb.len(),
-                        right_size: rb.len(),
-                        first_difference: Some(input::first_difference(&lb, &rb).unwrap_or(0)),
-                        utf16: input::has_utf16_bom(&lb) || input::has_utf16_bom(&rb),
-                    };
+                    let info = BinaryInfo::from_bytes(
+                        rel.display().to_string(),
+                        &l.to_bytes(),
+                        &r.to_bytes(),
+                    );
                     App::binary_screen(info, self.opts.theme.clone(), size)
                 } else {
                     let label = rel.display().to_string();

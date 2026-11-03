@@ -274,12 +274,12 @@ fn gutter_cells(app: &App, kind: RowKind, current: bool) -> (String, Style) {
         };
         return (format!(" {mark} "), Style::default().fg(fg));
     }
-    let l = if app.session.left.readonly {
+    let l = if app.session.left.is_readonly() {
         ' '
     } else {
         '←'
     };
-    let r = if app.session.right.readonly {
+    let r = if app.session.right.is_readonly() {
         ' '
     } else {
         '→'
@@ -472,7 +472,7 @@ fn draw_header(buf: &mut Buffer, app: &App, area: Rect) {
             &side_name(app, side),
             name_style.bg(t.panel_bg),
         );
-        if d.readonly {
+        if d.is_readonly() {
             put(
                 buf,
                 &mut x,
@@ -510,7 +510,7 @@ fn draw_header(buf: &mut Buffer, app: &App, area: Rect) {
                 &side_name(app, Side::Left),
                 Style::default().fg(t.muted).bg(t.panel_bg),
             );
-            if app.session.left.readonly {
+            if app.session.left.is_readonly() {
                 put(buf, &mut x, 0, area.width, " read-only", dim);
             }
             put(buf, &mut x, 0, area.width, "  ↔  ", dim);
@@ -522,7 +522,7 @@ fn draw_header(buf: &mut Buffer, app: &App, area: Rect) {
                 &side_name(app, Side::Right),
                 bold(Style::default().fg(t.bright).bg(t.panel_bg)),
             );
-            if app.session.right.readonly {
+            if app.session.right.is_readonly() {
                 put(buf, &mut x, 0, area.width, " read-only", dim);
             }
             if app.session.is_dirty() {
@@ -705,7 +705,10 @@ fn draw_status(buf: &mut Buffer, app: &App, area: Rect) {
         return;
     }
 
-    let (lw, rw) = (!app.session.left.readonly, !app.session.right.readonly);
+    let (lw, rw) = (
+        !app.session.left.is_readonly(),
+        !app.session.right.is_readonly(),
+    );
     let mut right_items: Vec<(&str, &str)> = if app.help {
         vec![]
     } else if app.prompt.is_some() {

@@ -171,6 +171,7 @@ fn directory_shell(size: (u16, u16)) -> (tempfile::TempDir, Shell) {
         readonly_left: true,
         readonly_right: false,
         large_file_bytes: wenas::input::LARGE_FILE_BYTES,
+        diff: wenas::ops::DiffPolicy::default(),
     };
     let mut shell = Shell::new(dir, opts, size);
     let deadline = Instant::now() + Duration::from_secs(10);

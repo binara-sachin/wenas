@@ -80,6 +80,7 @@ fn shell_with(t: &Tree, show_identical: bool, readonly_left: bool, size: (u16, u
         readonly_left,
         readonly_right: false,
         large_file_bytes: wenas::input::LARGE_FILE_BYTES,
+        diff: wenas::ops::DiffPolicy::default(),
     };
     let mut s = Shell::new(dir, opts, size);
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -525,6 +526,7 @@ fn scanning_state_is_shown_while_results_stream_in() {
         readonly_left: false,
         readonly_right: false,
         large_file_bytes: wenas::input::LARGE_FILE_BYTES,
+        diff: wenas::ops::DiffPolicy::default(),
     };
     let mut s = Shell::new(dir, opts, (110, 20));
     assert!(s.polling());
@@ -548,6 +550,7 @@ fn esc_stops_a_running_scan() {
         readonly_left: false,
         readonly_right: false,
         large_file_bytes: wenas::input::LARGE_FILE_BYTES,
+        diff: wenas::ops::DiffPolicy::default(),
     };
     let mut s = Shell::new(dir, opts, (110, 20));
     press(&mut s, KeyCode::Esc);
@@ -618,6 +621,7 @@ fn shell_with_limit(t: &Tree, large_file_bytes: u64) -> Shell {
         readonly_left: false,
         readonly_right: false,
         large_file_bytes,
+        diff: wenas::ops::DiffPolicy::default(),
     };
     let mut s = Shell::new(dir, opts, (110, 20));
     let deadline = Instant::now() + Duration::from_secs(5);

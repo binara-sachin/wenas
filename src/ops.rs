@@ -2,9 +2,11 @@
 
 use crate::diff::{Hunk, Whitespace, diff};
 use crate::document::{DiskId, Document, Span};
+use crate::worker::{Job, Poll};
 use std::fmt;
 use std::io::Write;
 use std::path::Path;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -23,6 +25,8 @@ pub enum Dir {
 pub enum OpError {
     ReadOnly(Side),
     NoSuchHunk,
+    /// A comparison is still running; edits wait for it (or for `Esc`).
+    Busy,
 }
 
 impl fmt::Display for OpError {
@@ -31,6 +35,7 @@ impl fmt::Display for OpError {
             OpError::ReadOnly(Side::Left) => write!(f, "left side is read-only"),
             OpError::ReadOnly(Side::Right) => write!(f, "right side is read-only"),
             OpError::NoSuchHunk => write!(f, "no hunk here"),
+            OpError::Busy => write!(f, "still comparing"),
         }
     }
 }
@@ -129,6 +134,66 @@ struct Edit {
     state_after: u64,
 }
 
+/// How diffs are run (spec §9, §10): small inputs inline, where a diff takes
+/// microseconds; larger ones on a worker thread, so the screen can show
+/// progress and `Esc` can cancel.
+#[derive(Clone, Copy)]
+pub struct DiffPolicy {
+    /// Both sides together at or below this many lines are diffed inline.
+    pub inline_lines: usize,
+    /// How long a background diff is waited for before the session counts as busy.
+    pub fast_wait: Duration,
+    /// The diff itself; replaceable so tests can make it slow or fail.
+    pub compute: fn(&Document, &Document, Whitespace) -> Vec<Hunk>,
+}
+
+impl Default for DiffPolicy {
+    fn default() -> Self {
+        DiffPolicy {
+            inline_lines: 5_000,
+            fast_wait: Duration::from_millis(25),
+            compute: diff,
+        }
+    }
+}
+
+/// How to undo the operation that started a background diff, so that cancelling
+/// it leaves the documents and the hunks consistent with each other.
+enum Revert {
+    /// The very first diff: nothing to go back to.
+    Initial,
+    /// A hunk copy. `prev_redo` is the redo list the copy cleared.
+    Copy {
+        prev_redo: Vec<Edit>,
+    },
+    Undo,
+    Redo,
+    Whitespace(Whitespace),
+    /// A whole-file replacement (editor trip or reload from disk).
+    Replace {
+        side: Side,
+        prev_disk: Option<DiskId>,
+        prev_saved: u64,
+        prev_redo: Vec<Edit>,
+    },
+}
+
+struct Pending {
+    job: Job<Vec<Hunk>>,
+    /// The hunks that matched the documents before the operation.
+    prev_hunks: Vec<Hunk>,
+    revert: Revert,
+}
+
+/// What `Session::cancel` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cancelled {
+    /// The first diff was abandoned; there is nothing to show.
+    Initial,
+    /// The operation was undone; the previous state is back.
+    Reverted,
+}
+
 pub struct Session {
     pub left: Document,
     pub right: Document,
@@ -137,6 +202,8 @@ pub struct Session {
     undo: Vec<Edit>,
     redo: Vec<Edit>,
     next_state: u64,
+    policy: DiffPolicy,
+    pending: Option<Pending>,
 }
 
 impl Session {
@@ -155,7 +222,145 @@ impl Session {
             undo: Vec::new(),
             redo: Vec::new(),
             next_state: 1,
+            policy: DiffPolicy::default(),
+            pending: None,
         }
+    }
+
+    /// A session whose first diff may run in the background (see `DiffPolicy`).
+    /// Check `is_busy` before reading `hunks`.
+    pub fn start(left: Document, right: Document, ws: Whitespace, policy: DiffPolicy) -> Self {
+        let mut s = Self::from_parts(left, right, ws, Vec::new());
+        s.policy = policy;
+        s.diff(Revert::Initial);
+        s
+    }
+
+    /// Run the diff for the current documents: inline when small, else on a
+    /// worker with a short wait before reporting busy.
+    fn diff(&mut self, revert: Revert) {
+        let compute = self.policy.compute;
+        if self.left.len() + self.right.len() <= self.policy.inline_lines {
+            self.hunks = compute(&self.left, &self.right, self.ws);
+            return;
+        }
+        let prev_hunks = std::mem::take(&mut self.hunks);
+        let (l, r, ws) = (self.left.clone(), self.right.clone(), self.ws);
+        let job = Job::spawn(move |_| compute(&l, &r, ws));
+        match job.wait(self.policy.fast_wait) {
+            Poll::Ready(h) => self.hunks = h,
+            Poll::Pending => {
+                self.pending = Some(Pending {
+                    job,
+                    prev_hunks,
+                    revert,
+                });
+            }
+            Poll::Lost => self.hunks = compute(&self.left, &self.right, self.ws),
+        }
+    }
+
+    /// Change how later diffs run (the first diff is already done).
+    pub fn set_policy(&mut self, policy: DiffPolicy) {
+        self.policy = policy;
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// How long the running diff has been going.
+    pub fn busy_for(&self) -> Option<Duration> {
+        self.pending.as_ref().map(|p| p.job.elapsed())
+    }
+
+    /// Take a finished background diff. Returns true when the session just
+    /// stopped being busy.
+    pub fn poll(&mut self) -> bool {
+        let Some(p) = &self.pending else { return false };
+        match p.job.poll() {
+            Poll::Pending => false,
+            Poll::Ready(h) => {
+                self.hunks = h;
+                self.pending = None;
+                true
+            }
+            Poll::Lost => {
+                self.pending = None;
+                self.hunks = (self.policy.compute)(&self.left, &self.right, self.ws);
+                true
+            }
+        }
+    }
+
+    /// Wait for a running diff (for callers with no screen to show progress on).
+    pub fn finish_blocking(&mut self) {
+        if let Some(p) = self.pending.take() {
+            self.hunks = match p.job.wait_forever() {
+                Poll::Ready(h) => h,
+                _ => (self.policy.compute)(&self.left, &self.right, self.ws),
+            };
+        }
+    }
+
+    /// Abandon the running diff and undo the operation that started it.
+    /// `None` when nothing was running.
+    pub fn cancel(&mut self) -> Option<Cancelled> {
+        let p = self.pending.take()?;
+        p.job.cancel();
+        let Pending {
+            prev_hunks, revert, ..
+        } = p;
+        match revert {
+            Revert::Initial => return Some(Cancelled::Initial),
+            Revert::Copy { prev_redo } => {
+                if let Some(e) = self.undo.pop() {
+                    self.apply_backward(&e);
+                }
+                self.redo = prev_redo;
+            }
+            Revert::Undo => {
+                if let Some(e) = self.redo.pop() {
+                    self.apply_forward(&e);
+                    self.undo.push(e);
+                }
+            }
+            Revert::Redo => {
+                if let Some(e) = self.undo.pop() {
+                    self.apply_backward(&e);
+                    self.redo.push(e);
+                }
+            }
+            Revert::Whitespace(old) => self.ws = old,
+            Revert::Replace {
+                side,
+                prev_disk,
+                prev_saved,
+                prev_redo,
+            } => {
+                if let Some(e) = self.undo.pop() {
+                    self.apply_backward(&e);
+                }
+                let doc = self.doc_mut(side);
+                doc.set_disk_id(prev_disk);
+                doc.saved_state = prev_saved;
+                self.redo = prev_redo;
+            }
+        }
+        self.hunks = prev_hunks;
+        Some(Cancelled::Reverted)
+    }
+
+    fn apply_forward(&mut self, e: &Edit) {
+        let doc = self.doc_mut(e.side);
+        doc.splice(e.start..e.start + e.old.len(), &e.new);
+        doc.state = e.state_after;
+    }
+
+    fn apply_backward(&mut self, e: &Edit) {
+        let doc = self.doc_mut(e.side);
+        doc.splice(e.start..e.start + e.new.len(), &e.old);
+        doc.state = e.state_before;
     }
 
     pub fn doc(&self, side: Side) -> &Document {
@@ -172,12 +377,17 @@ impl Session {
     }
 
     pub fn set_whitespace(&mut self, ws: Whitespace) {
-        self.ws = ws;
-        self.rediff();
+        if self.is_busy() {
+            return;
+        }
+        let old = std::mem::replace(&mut self.ws, ws);
+        self.diff(Revert::Whitespace(old));
     }
 
+    /// Recompute the hunks now, on this thread.
     pub fn rediff(&mut self) {
-        self.hunks = diff(&self.left, &self.right, self.ws);
+        self.pending = None;
+        self.hunks = (self.policy.compute)(&self.left, &self.right, self.ws);
     }
 
     pub fn can_undo(&self) -> bool {
@@ -189,6 +399,9 @@ impl Session {
 
     /// Replace hunk `idx` on the destination side with the source side's lines.
     pub fn copy_hunk(&mut self, idx: usize, dir: Dir) -> Result<(), OpError> {
+        if self.is_busy() {
+            return Err(OpError::Busy);
+        }
         let hunk = self.hunks.get(idx).cloned().ok_or(OpError::NoSuchHunk)?;
         let (src_side, dst_side, src_range, dst_range) = match dir {
             Dir::LeftToRight => (Side::Left, Side::Right, hunk.left, hunk.right),
@@ -249,37 +462,39 @@ impl Session {
             state_before,
             state_after,
         });
-        self.redo.clear();
-        self.rediff();
+        let prev_redo = std::mem::take(&mut self.redo);
+        self.diff(Revert::Copy { prev_redo });
         Ok(())
     }
 
     /// Undo the most recent edit.
     pub fn undo(&mut self) -> Option<EditLoc> {
+        if self.is_busy() {
+            return None;
+        }
         let e = self.undo.pop()?;
-        let doc = self.doc_mut(e.side);
-        doc.splice(e.start..e.start + e.new.len(), &e.old);
-        doc.state = e.state_before;
+        self.apply_backward(&e);
         let loc = EditLoc {
             side: e.side,
             start: e.start,
         };
         self.redo.push(e);
-        self.rediff();
+        self.diff(Revert::Undo);
         Some(loc)
     }
 
     pub fn redo(&mut self) -> Option<EditLoc> {
+        if self.is_busy() {
+            return None;
+        }
         let e = self.redo.pop()?;
-        let doc = self.doc_mut(e.side);
-        doc.splice(e.start..e.start + e.old.len(), &e.new);
-        doc.state = e.state_after;
+        self.apply_forward(&e);
         let loc = EditLoc {
             side: e.side,
             start: e.start,
         };
         self.undo.push(e);
-        self.rediff();
+        self.diff(Revert::Redo);
         Some(loc)
     }
 
@@ -300,8 +515,13 @@ impl Session {
     /// `$EDITOR` trip, or a reload). One undo step; the side is clean afterwards,
     /// and undoing makes it dirty again. Returns false if nothing changed.
     pub fn replace_content(&mut self, side: Side, bytes: &[u8], disk: DiskId) -> bool {
+        if self.is_busy() {
+            return false;
+        }
         let state_after = self.next_state;
         let doc = self.doc_mut(side);
+        let prev_disk = doc.disk_id().cloned();
+        let prev_saved = doc.saved_state;
         doc.set_disk_id(Some(disk));
         if doc.to_bytes() == bytes {
             return false;
@@ -319,8 +539,13 @@ impl Session {
             state_before,
             state_after,
         });
-        self.redo.clear();
-        self.rediff();
+        let prev_redo = std::mem::take(&mut self.redo);
+        self.diff(Revert::Replace {
+            side,
+            prev_disk,
+            prev_saved,
+            prev_redo,
+        });
         true
     }
 

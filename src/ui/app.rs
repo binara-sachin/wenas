@@ -5,7 +5,7 @@ use crate::document::DiskId;
 use crate::editor::EditorRequest;
 use crate::inline::{Inline, inline_diff};
 use crate::input::EolStyle;
-use crate::ops::{Dir, EditLoc, OpError, SaveError, Session, Side};
+use crate::ops::{Cancelled, Dir, EditLoc, OpError, SaveError, Session, Side};
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::HashMap;
@@ -27,6 +27,9 @@ pub enum Outcome {
     Back,
     /// Directory mode: the user asked to quit; the shell decides whether to ask first.
     QuitAsk,
+    /// The first diff finished with no differences, so there is nothing to show
+    /// (file mode prints `identical`).
+    Identical,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +69,17 @@ pub enum Modal {
     QuitUnsaved,
     /// `e` on a side with unsaved changes (spec §7.3).
     SaveFirst { side: Side },
+}
+
+/// What to do when the running background diff completes (or is cancelled).
+struct AfterDiff {
+    /// The cursor position to keep, captured before the operation.
+    anchor: Option<(Option<usize>, Option<usize>)>,
+    /// Move the cursor to this edit (undo and redo).
+    jump: Option<EditLoc>,
+    message: Option<String>,
+    /// The first diff of this session, not a re-diff after an edit.
+    initial: bool,
 }
 
 /// Text for the bottom panel of a modal.
@@ -116,6 +130,9 @@ pub struct App {
     pub binary: Option<BinaryInfo>,
     /// Opened from the directory view: `Backspace` goes back, `q` defers to the shell.
     pub in_directory: bool,
+    /// The first diff was cancelled, so this session has nothing usable in it.
+    pub diff_cancelled: bool,
+    after_diff: Option<AfterDiff>,
     pub width: u16,
     pub height: u16,
     pub rows: Vec<Row>,
@@ -150,6 +167,8 @@ impl App {
             cfg,
             binary: None,
             in_directory: false,
+            diff_cancelled: false,
+            after_diff: None,
             width: size.0,
             height: size.1,
             rows: Vec::new(),
@@ -172,11 +191,90 @@ impl App {
             inline_cache: HashMap::new(),
         };
         app.view = app.effective_view();
-        app.rebuild(None);
-        if !app.first_rows.is_empty() {
-            app.goto_hunk(0);
+        if app.session.is_busy() {
+            // The first diff is still running: rows come when it completes.
+            app.after_diff = Some(AfterDiff {
+                anchor: None,
+                jump: None,
+                message: None,
+                initial: true,
+            });
+        } else {
+            app.finish_initial();
         }
         app
+    }
+
+    /// The first diff is available: build the rows and show the first hunk.
+    fn finish_initial(&mut self) {
+        self.rebuild(None);
+        if !self.first_rows.is_empty() {
+            self.goto_hunk(0);
+        } else if !self.in_directory && self.binary.is_none() && self.session.hunks.is_empty() {
+            self.outcome = Some(Outcome::Identical);
+        }
+    }
+
+    /// Called every event-loop turn: take a finished background diff.
+    pub fn tick(&mut self) {
+        if !self.session.poll() {
+            return;
+        }
+        match self.after_diff.take() {
+            Some(a) if a.initial => self.finish_initial(),
+            Some(a) => self.finish_diff(a),
+            None => self.rebuild(None),
+        }
+    }
+
+    fn finish_diff(&mut self, a: AfterDiff) {
+        self.rebuild(a.anchor);
+        if let Some(loc) = a.jump {
+            self.jump_to_line(loc);
+        }
+        if a.message.is_some() {
+            self.message = a.message;
+        }
+    }
+
+    /// An edit changed the documents: show the new diff now, or when it arrives.
+    fn settle(
+        &mut self,
+        anchor: Option<(Option<usize>, Option<usize>)>,
+        jump: Option<EditLoc>,
+        message: Option<String>,
+    ) {
+        let after = AfterDiff {
+            anchor,
+            jump,
+            message,
+            initial: false,
+        };
+        if self.session.is_busy() {
+            self.after_diff = Some(after);
+        } else {
+            self.finish_diff(after);
+        }
+    }
+
+    /// `Esc` while comparing: abandon the diff and undo the change that started it.
+    fn cancel_diff(&mut self) {
+        match self.session.cancel() {
+            Some(Cancelled::Initial) => {
+                self.diff_cancelled = true;
+                self.outcome = Some(if self.in_directory {
+                    Outcome::Back
+                } else {
+                    Outcome::Quit
+                });
+            }
+            Some(Cancelled::Reverted) => {
+                let anchor = self.after_diff.take().and_then(|a| a.anchor);
+                self.rebuild(anchor);
+                self.message = Some("comparison cancelled; the change was undone".into());
+            }
+            None => {}
+        }
     }
 
     pub fn binary_screen(info: BinaryInfo, theme: Theme, size: (u16, u16)) -> App {
@@ -189,6 +287,8 @@ impl App {
         );
         let mut app = App::new(session, theme, ViewConfig::default(), size);
         app.binary = Some(info);
+        // Two empty documents are "identical", which is not what this screen means.
+        app.outcome = None;
         app
     }
 
@@ -224,6 +324,9 @@ impl App {
     }
 
     pub fn rebuild(&mut self, anchor: Option<(Option<usize>, Option<usize>)>) {
+        if self.session.is_busy() {
+            return; // rows are built when the diff completes
+        }
         let (hunks, ll, rl) = (
             &self.session.hunks,
             self.session.left.len(),
@@ -522,6 +625,13 @@ impl App {
         }
         self.message = None;
         self.message_is_error = false;
+        if self.session.is_busy() {
+            // Comparing: only `Esc` (cancel) and `Ctrl-c` (above) do anything.
+            if key.code == KeyCode::Esc {
+                self.cancel_diff();
+            }
+            return;
+        }
         if self.binary.is_some() {
             let leave = matches!(
                 key.code,
@@ -609,8 +719,7 @@ impl App {
                 let anchor = self.anchor();
                 let ws = self.session.ws.next();
                 self.session.set_whitespace(ws);
-                self.rebuild(anchor);
-                self.message = Some(format!("whitespace: {}", ws.label()));
+                self.settle(anchor, None, Some(format!("whitespace: {}", ws.label())));
             }
             KeyCode::Char('>') => self.copy(Dir::LeftToRight),
             KeyCode::Char('<') => self.copy(Dir::RightToLeft),
@@ -664,14 +773,14 @@ impl App {
             });
         match self.session.copy_hunk(h, dir) {
             Ok(()) => {
-                self.rebuild(anchor);
                 let to = if dir == Dir::LeftToRight {
                     "right"
                 } else {
                     "left"
                 };
-                self.message = Some(format!("hunk {} copied to {to}", h + 1));
+                self.settle(anchor, None, Some(format!("hunk {} copied to {to}", h + 1)));
             }
+            Err(OpError::Busy) => {}
             Err(OpError::ReadOnly(side)) => {
                 let (name, other_key, other_name) = match side {
                     Side::Left => ("left", '>', "right"),
@@ -721,11 +830,7 @@ impl App {
     fn undo(&mut self) {
         let anchor = self.anchor();
         match self.session.undo() {
-            Some(loc) => {
-                self.rebuild(anchor);
-                self.jump_to_line(loc);
-                self.message = Some("undone".into());
-            }
+            Some(loc) => self.settle(anchor, Some(loc), Some("undone".into())),
             None => self.message = Some("nothing to undo".into()),
         }
     }
@@ -733,11 +838,7 @@ impl App {
     fn redo(&mut self) {
         let anchor = self.anchor();
         match self.session.redo() {
-            Some(loc) => {
-                self.rebuild(anchor);
-                self.jump_to_line(loc);
-                self.message = Some("redone".into());
-            }
+            Some(loc) => self.settle(anchor, Some(loc), Some("redone".into())),
             None => self.message = Some("nothing to redo".into()),
         }
     }
@@ -801,7 +902,7 @@ impl App {
             .session
             .replace_content(side, &bytes, DiskId::of_bytes(&bytes, mtime));
         if changed {
-            self.rebuild(anchor);
+            self.settle(anchor, None, None);
         }
         Ok(changed)
     }

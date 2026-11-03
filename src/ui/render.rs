@@ -341,7 +341,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.sync_size(area.width, area.height);
     // Compute inline highlights for visible hunks before borrowing immutably.
     let mut inline = HashMap::new();
-    if app.binary.is_none() && !app.help {
+    if app.binary.is_none() && !app.help && !app.session.is_busy() {
         let end = (app.top + app.content_height()).min(app.rows.len());
         let hunks: Vec<usize> = app.rows[app.top.min(end)..end]
             .iter()
@@ -359,6 +359,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.binary.is_some() {
         draw_binary(buf, app, area);
+        return;
+    }
+    if app.session.is_busy() {
+        draw_comparing(buf, app, area);
         return;
     }
     draw_header(buf, app, area);
@@ -974,6 +978,54 @@ fn draw_help(buf: &mut Buffer, app: &App, area: Rect) {
         area.width as usize - 3,
         Style::default().fg(t.dim),
     );
+}
+
+const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+
+/// Progress is only shown once a diff has taken longer than this (spec §10).
+const PROGRESS_AFTER: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// The "Comparing…" screen shown while a background diff runs. `Esc` cancels.
+fn draw_comparing(buf: &mut Buffer, app: &App, area: Rect) {
+    let t = &app.theme;
+    let elapsed = app.session.busy_for().unwrap_or_default();
+    if elapsed < PROGRESS_AFTER {
+        return; // most diffs finish before this; avoid a flash of progress
+    }
+    let frame = SPINNER[(elapsed.as_millis() / 100) as usize % SPINNER.len()];
+    let mut x = 2;
+    put(
+        buf,
+        &mut x,
+        2,
+        area.width,
+        frame,
+        Style::default().fg(t.amber),
+    );
+    put(
+        buf,
+        &mut x,
+        2,
+        area.width,
+        " Comparing",
+        bold(Style::default().fg(t.bright)),
+    );
+    let lines = app.session.left.len() + app.session.right.len();
+    let detail = format!("{} lines, {:.1}s", thousands(lines), elapsed.as_secs_f32());
+    buf.set_stringn(
+        2,
+        3,
+        detail,
+        (area.width as usize).saturating_sub(3),
+        Style::default().fg(t.muted),
+    );
+    let y = area.height - 1;
+    buf.set_style(
+        Rect::new(0, y, area.width, 1),
+        Style::default().bg(t.panel_bg),
+    );
+    let mut x = 1;
+    hints(buf, &mut x, y, area.width, t, &[("Esc", "cancel")], "  ");
 }
 
 pub fn thousands(n: usize) -> String {

@@ -13,7 +13,7 @@ use crate::document::{Document, ReadOnlyReason};
 use crate::editor::EditorRequest;
 use crate::gitenv::mark_readonly;
 use crate::input::{self, read_input};
-use crate::ops::{Session, Side};
+use crate::ops::{DiffPolicy, Session, Side};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -28,6 +28,8 @@ pub struct ShellOptions {
     pub readonly_right: bool,
     /// Ask before loading a file larger than this (spec §9).
     pub large_file_bytes: u64,
+    /// How diffs run (inline when small, on a worker when large).
+    pub diff: DiffPolicy,
 }
 
 pub struct Shell {
@@ -145,7 +147,7 @@ impl Shell {
                     l.label = Some(label.clone());
                     r.label = Some(label);
                     App::new(
-                        Session::new(l, r, self.opts.ws),
+                        Session::start(l, r, self.opts.ws, self.opts.diff),
                         self.opts.theme.clone(),
                         self.opts.view.clone(),
                         size,
@@ -314,8 +316,13 @@ impl Shell {
         };
         match o {
             Outcome::Quit | Outcome::Abort => self.outcome = Some(o),
-            Outcome::Back => {
+            Outcome::Back | Outcome::Identical => {
                 self.saving_and_quitting = false;
+                // A cancelled first diff leaves nothing worth keeping: reopening
+                // the entry starts over.
+                if self.open.get(&idx).is_some_and(|a| a.diff_cancelled) {
+                    self.open.remove(&idx);
+                }
                 self.close_current();
             }
             Outcome::QuitAsk if was_saving => self.continue_save_and_quit(),
@@ -406,10 +413,16 @@ impl Ui for Shell {
 
     fn tick(&mut self) {
         self.dir.poll();
+        if let Some(app) = self.current.and_then(|i| self.open.get_mut(&i)) {
+            app.tick();
+        }
     }
 
     fn polling(&self) -> bool {
-        self.current.is_none() && self.dir.animating()
+        match self.current.and_then(|i| self.open.get(&i)) {
+            Some(app) => app.session.is_busy(),
+            None => self.dir.animating(),
+        }
     }
 
     fn outcome(&self) -> Option<Outcome> {

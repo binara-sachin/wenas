@@ -69,7 +69,7 @@ pub fn exit_code(outcome: crate::ui::Outcome) -> u8 {
     match outcome {
         Outcome::Abort => EXIT_ABORT,
         // `Back` and `QuitAsk` are handled inside the directory shell.
-        Outcome::Quit | Outcome::Back | Outcome::QuitAsk => EXIT_OK,
+        Outcome::Quit | Outcome::Back | Outcome::QuitAsk | Outcome::Identical => EXIT_OK,
     }
 }
 

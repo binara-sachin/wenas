@@ -51,6 +51,7 @@ Automated tests cannot cover the terminal itself. Before each release, on macOS 
 - [ ] `git dd --no-symlinks` behaves the same.
 - [ ] `Ctrl-c` in a per-file `git difftool` stops the run (git reports `external diff died`).
 - [ ] The theme is right in a dark and a light terminal, and inside tmux. Check `theme = "light"` as well.
+- [ ] A large diff (try two 100k-line files): the "Comparing" screen appears, `Esc` cancels it, and a re-diff after `>` can be cancelled too.
 - [ ] `e` opens Neovim at the cursor line and the file reloads on return.
 - [ ] `NO_COLOR=1 wenas a b` shows changes with markers and reverse video.
 - [ ] Resize the window across 100 columns: the view switches between side by side and unified.

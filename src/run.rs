@@ -4,24 +4,18 @@
 
 use crate::cli::{Cli, EXIT_OK, exit_code};
 use crate::config::{self, Config};
-use crate::diff::{Whitespace, diff};
+use crate::diff::Whitespace;
 use crate::dircmp::Scan;
 use crate::document::{Document, ReadOnlyReason};
 use crate::gitenv::mark_readonly;
 use crate::input::{self, read_input};
-use crate::ops::Session;
+use crate::ops::{DiffPolicy, Session};
 use crate::ui::dir::DirView;
-use crate::ui::loading::Loading;
 use crate::ui::shell::{Shell, ShellOptions};
 use crate::ui::term::{confirm_large_files, run_interactive};
-use crate::ui::{App, BinaryInfo, ViewConfig};
+use crate::ui::{App, BinaryInfo, Outcome, ViewConfig};
 use std::io::IsTerminal;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-/// Above this many lines (both sides together) the first diff runs in the background.
-const BACKGROUND_DIFF_LINES: usize = 50_000;
 
 /// The view and comparison settings shared by file and directory mode:
 /// command-line flags win over the config file.
@@ -122,48 +116,25 @@ fn run_files(cli: &Cli, cfg: &Config, left: &Path, right: &Path) -> anyhow::Resu
     );
     let Settings { view, ws } = Settings::new(cli, cfg);
 
-    // Small inputs diff inline (microseconds). Large ones run on a worker thread
-    // so the screen can show progress and `Esc` can cancel (spec §10).
-    if l.len() + r.len() > BACKGROUND_DIFF_LINES && std::io::stdout().is_terminal() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let (lc, rc) = (l.clone(), r.clone());
-        std::thread::spawn(move || {
-            let _ = tx.send(diff(&lc, &rc, ws));
-        });
-        let hunks = match rx.recv_timeout(std::time::Duration::from_millis(300)) {
-            Ok(h) => h,
-            Err(_) => {
-                let identical = Arc::new(AtomicBool::new(false));
-                let flag = identical.clone();
-                let outcome = run_interactive(cfg, move |theme, size| {
-                    Loading::new(rx, (l, r), ws, theme, view, size, flag)
-                })?;
-                if identical.load(Ordering::Relaxed) {
-                    println!("identical");
-                }
-                return Ok(exit_code(outcome));
-            }
-        };
-        if hunks.is_empty() {
-            println!("identical");
-            return Ok(EXIT_OK);
-        }
-        let outcome = run_interactive(cfg, move |theme, size| {
-            App::new(Session::from_parts(l, r, ws, hunks), theme, view, size)
-        })?;
-        return Ok(exit_code(outcome));
+    // Small inputs diff inline; large ones run on a worker, and the screen shows
+    // progress with `Esc` to cancel (spec §10). With no terminal there is no
+    // screen, so just wait for the answer.
+    let mut session = Session::start(l, r, ws, DiffPolicy::default());
+    if !std::io::stdout().is_terminal() {
+        session.finish_blocking();
     }
-
     // No hunks (identical, or only line-ending/ignored-whitespace differences)
     // never opens the UI.
-    if diff(&l, &r, ws).is_empty() {
+    if !session.is_busy() && session.hunks.is_empty() {
         println!("identical");
         return Ok(EXIT_OK);
     }
     require_terminal()?;
-    let outcome = run_interactive(cfg, move |theme, size| {
-        App::new(Session::new(l, r, ws), theme, view, size)
-    })?;
+    let outcome = run_interactive(cfg, move |theme, size| App::new(session, theme, view, size))?;
+    if outcome == Outcome::Identical {
+        // The diff finished while the progress screen was up and found nothing.
+        println!("identical");
+    }
     Ok(exit_code(outcome))
 }
 
@@ -191,6 +162,7 @@ fn run_dir(cli: &Cli, cfg: &Config, left: &Path, right: &Path) -> anyhow::Result
             readonly_left,
             readonly_right,
             large_file_bytes: input::LARGE_FILE_BYTES,
+            diff: DiffPolicy::default(),
         };
         Shell::new(dir, opts, size)
     })?;

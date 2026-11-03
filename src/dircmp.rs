@@ -6,14 +6,15 @@
 //! the first differing byte.
 
 use crate::input::{BINARY_SNIFF_LEN, looks_binary};
+use crate::worker::{CancelFlag, spawn_stream};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender, channel, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::time::{Duration, Instant};
 
 const CHUNK: usize = 64 * 1024;
@@ -466,25 +467,19 @@ pub fn compare(
 /// A scan running on a worker thread.
 pub struct Scan {
     pub rx: Receiver<Msg>,
-    cancel: Arc<AtomicBool>,
+    cancel: CancelFlag,
 }
 
 impl Scan {
     pub fn spawn(left: PathBuf, right: PathBuf, exclude: Vec<String>) -> Scan {
-        let (tx, rx): (Sender<Msg>, Receiver<Msg>) = mpsc::channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let flag = cancel.clone();
-        std::thread::spawn(move || {
-            // A closed receiver (UI gone) just makes sends fail; the scan finishes quietly.
-            compare(&left, &right, &exclude, &flag, &mut |m| {
-                let _ = tx.send(m);
-            });
+        let (rx, cancel) = spawn_stream(move |cancel, emit| {
+            compare(&left, &right, &exclude, cancel.as_atomic(), emit);
         });
         Scan { rx, cancel }
     }
 
     pub fn cancel(&self) {
-        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel.cancel();
     }
 
     /// Collect messages for up to `limit`, stopping early at `Done`.

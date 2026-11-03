@@ -77,6 +77,12 @@ impl Ui for App {
     fn on_key(&mut self, key: ratatui::crossterm::event::KeyEvent) {
         App::on_key(self, key);
     }
+    fn tick(&mut self) {
+        App::tick(self);
+    }
+    fn polling(&self) -> bool {
+        self.session.is_busy()
+    }
     fn outcome(&self) -> Option<Outcome> {
         self.outcome
     }

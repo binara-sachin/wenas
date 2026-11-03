@@ -11,16 +11,13 @@ use assert_cmd::Command;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use wenas::diff::{Whitespace, diff};
 use wenas::document::{Document, ReadOnlyReason};
 use wenas::ops::{Dir, Session, Side};
 use wenas::theme::{Depth, Theme};
-use wenas::ui::loading::Loading;
 use wenas::ui::term::Ui;
-use wenas::ui::{App, BinaryInfo, Outcome, ViewConfig};
+use wenas::ui::{App, BinaryInfo, ViewConfig};
 
 fn wenas() -> Command {
     Command::cargo_bin("wenas").unwrap()
@@ -352,73 +349,7 @@ fn pathological_diffs_finish() {
     );
 }
 
-#[test]
-fn a_slow_diff_shows_progress_and_esc_cancels() {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let flag = Arc::new(AtomicBool::new(false));
-    let mut ui = Loading::new(
-        rx,
-        (doc(b"a\n"), doc(b"b\n")),
-        Whitespace::Off,
-        theme(),
-        ViewConfig::default(),
-        (80, 10),
-        flag.clone(),
-    );
-    assert!(ui.polling());
-    let s = screen(&mut ui, (80, 10));
-    assert!(
-        s.contains("Comparing") && s.contains("2 lines") && s.contains("Esc cancel"),
-        "{s}"
-    );
-    ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(ui.outcome(), Some(Outcome::Quit));
-    assert!(!flag.load(Ordering::Relaxed));
-    drop(tx);
-}
-
-#[test]
-fn a_finished_background_diff_becomes_the_normal_view() {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let (l, r) = (doc(b"a\nb\n"), doc(b"a\nB\n"));
-    let hunks = diff(&l, &r, Whitespace::Off);
-    let flag = Arc::new(AtomicBool::new(false));
-    let mut ui = Loading::new(
-        rx,
-        (l, r),
-        Whitespace::Off,
-        theme(),
-        wide_cfg(),
-        (100, 8),
-        flag.clone(),
-    );
-    tx.send(hunks).unwrap();
-    ui.tick();
-    assert!(!ui.polling());
-    let s = screen(&mut ui, (100, 8));
-    assert!(s.contains("1/1") && s.contains("copy to right"), "{s}");
-    ui.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
-    assert_eq!(ui.outcome(), Some(Outcome::Quit));
-}
-
-#[test]
-fn a_background_diff_with_no_differences_reports_identical() {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let flag = Arc::new(AtomicBool::new(false));
-    let mut ui = Loading::new(
-        rx,
-        (doc(b"a\r\n"), doc(b"a\n")),
-        Whitespace::Off,
-        theme(),
-        ViewConfig::default(),
-        (80, 8),
-        flag.clone(),
-    );
-    tx.send(vec![]).unwrap();
-    ui.tick();
-    assert!(flag.load(Ordering::Relaxed));
-    assert_eq!(ui.outcome(), Some(Outcome::Quit));
-}
+// (Background diffing, progress and cancel are covered in tests/background_diff.rs.)
 
 // ---- Empty file vs non-empty ----
 

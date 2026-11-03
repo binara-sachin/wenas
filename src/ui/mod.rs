@@ -2,7 +2,6 @@
 
 pub mod app;
 pub mod dir;
-pub mod loading;
 pub mod render;
 pub mod shell;
 pub mod term;

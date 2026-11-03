@@ -154,7 +154,7 @@ These are goals to measure, not gates (see [the spec](docs/wenas-spec.md#9-perfo
 | Directory compare, first result (50k files) | ≤ 100 ms | 4.68 ms | ✅ |
 | Directory compare, full scan (50k files) | streamed | 373.07 ms | |
 
-The one miss is the first screen for 100k-line files. Almost all of that time is the histogram diff itself (about 480 ms; imara-diff's Myers does the same input in 3 ms, and `git diff --histogram` takes over a second). Inputs over 50,000 lines are diffed in the background, with a progress screen and `Esc` to cancel, so a large file never freezes the terminal.
+The one miss is the first screen for 100k-line files. Almost all of that time is the histogram diff itself (about 480 ms; imara-diff's Myers does the same input in 3 ms, and `git diff --histogram` takes over a second). Diffs of more than 5,000 lines run on a worker thread: after 300 ms a progress screen appears and `Esc` cancels (cancelling a re-diff after a copy, undo or `W` undoes that change), so a large file never freezes the terminal.
 
 ## Not in v1
 

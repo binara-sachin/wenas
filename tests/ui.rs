@@ -64,6 +64,27 @@ fn side_by_side() {
 }
 
 #[test]
+fn crlf_against_lf_screen() {
+    // CRLF vs LF is ignored when comparing but flagged in the status line.
+    let mut l = Document::from_bytes(b"fn a() {\r\n    one();\r\n    two();\r\n}\r\n".to_vec());
+    let mut r = Document::from_bytes(b"fn a() {\n    one();\n    TWO();\n}\n".to_vec());
+    l.label = Some("a/windows.rs".into());
+    r.label = Some("windows.rs".into());
+    let mut a = App::new(
+        Session::new(l, r, Whitespace::Off),
+        theme(),
+        ViewConfig::default(),
+        (100, 10),
+    );
+    assert_eq!(
+        a.session.hunks.len(),
+        1,
+        "only the real change, not every line"
+    );
+    insta::assert_snapshot!(text(&mut a));
+}
+
+#[test]
 fn unified_when_narrow() {
     let mut a = app((80, 20));
     assert_eq!(a.view, View::Unified);

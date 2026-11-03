@@ -696,3 +696,30 @@ fn unreadable_entries_show_a_bang_and_the_reason() {
     open(&mut s, "fixtures/server.pem");
     assert!(s.current.is_none() && s.dir.message_is_error);
 }
+
+#[test]
+fn the_identical_tag_survives_very_long_paths() {
+    // macOS temp dirs are long (/var/folders/xx/.../T/.tmpXXXX); the header must
+    // still show whether identical files are hidden. This failed on macOS CI.
+    let tmp = tempfile::tempdir().unwrap();
+    let long = tmp.path().join("a-deeply-nested-directory-name".repeat(3));
+    let (l, r) = (long.join("left"), long.join("right"));
+    write(&l, "f.rs", b"1");
+    write(&r, "f.rs", b"2");
+    let t = Tree {
+        _tmp: tmp,
+        left: l,
+        right: r,
+    };
+    for (size, i_pressed) in [((110, 20), false), ((80, 12), false), ((110, 20), true)] {
+        let mut s = shell_with(&t, i_pressed, false, size);
+        let header = screen(&mut s, size).lines().next().unwrap().to_string();
+        let tag = if i_pressed {
+            "identical shown"
+        } else {
+            "identical hidden"
+        };
+        assert!(header.contains(tag), "{header}");
+        assert!(header.chars().count() <= size.0 as usize);
+    }
+}

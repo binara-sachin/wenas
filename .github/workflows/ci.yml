@@ -14,6 +14,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The "matches git on this repository's history" test needs the history.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

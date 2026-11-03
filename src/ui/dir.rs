@@ -359,6 +359,28 @@ fn clip_left(s: &str, width: usize) -> String {
     format!("…{}", s.chars().skip(n - keep).collect::<String>())
 }
 
+/// Width of the fixed words in the header: "left  " and "   right  ".
+const HEADER_LABELS: usize = 16;
+
+/// Share `budget` columns between the two header paths, clipping the longer
+/// ones from the left. A short path leaves its unused room to the other.
+fn fit_paths(left: &str, right: &str, budget: usize) -> (String, String) {
+    let (ll, rl) = (left.chars().count(), right.chars().count());
+    if ll + rl <= budget {
+        return (left.to_string(), right.to_string());
+    }
+    let mut lmax = budget / 2;
+    let mut rmax = budget - lmax;
+    if ll < lmax {
+        rmax += lmax - ll;
+        lmax = ll;
+    } else if rl < rmax {
+        lmax += rmax - rl;
+        rmax = rl;
+    }
+    (clip_left(left, lmax), clip_left(right, rmax))
+}
+
 const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 pub fn draw_dir(buf: &mut Buffer, dir: &mut DirView, t: &Theme, area: Rect) {
@@ -378,6 +400,19 @@ pub fn draw_dir(buf: &mut Buffer, dir: &mut DirView, t: &Theme, area: Rect) {
             panel
         },
     );
+    let tag = if dir.show_identical {
+        "identical shown"
+    } else {
+        "identical hidden"
+    };
+    // The paths give way (keeping their ends) so the tag always fits, however
+    // long the temp directories are (macOS paths easily exceed 60 columns).
+    let budget = (area.width as usize).saturating_sub(1 + tag.len() + 3 + HEADER_LABELS);
+    let (left_path, right_path) = fit_paths(
+        &dir.left.display().to_string(),
+        &dir.right.display().to_string(),
+        budget,
+    );
     let mut x = 1;
     let dim = Style::default().fg(t.dim).bg(t.panel_bg);
     put(buf, &mut x, 0, area.width, "left  ", dim);
@@ -386,7 +421,7 @@ pub fn draw_dir(buf: &mut Buffer, dir: &mut DirView, t: &Theme, area: Rect) {
         &mut x,
         0,
         area.width,
-        &dir.left.display().to_string(),
+        &left_path,
         Style::default().fg(t.muted).bg(t.panel_bg),
     );
     put(buf, &mut x, 0, area.width, "   right  ", dim);
@@ -395,16 +430,11 @@ pub fn draw_dir(buf: &mut Buffer, dir: &mut DirView, t: &Theme, area: Rect) {
         &mut x,
         0,
         area.width,
-        &dir.right.display().to_string(),
+        &right_path,
         Style::default().fg(t.bright).bg(t.panel_bg),
     );
-    let tag = if dir.show_identical {
-        "identical shown"
-    } else {
-        "identical hidden"
-    };
     let tx = area.width.saturating_sub(tag.len() as u16 + 1);
-    if tx > x + 2 {
+    if tx >= x + 2 {
         let style = if dir.show_identical {
             Style::default().fg(t.bright).bg(t.panel_bg)
         } else {
@@ -662,6 +692,17 @@ fn draw_dir_help(buf: &mut Buffer, t: &Theme, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_header_paths_are_clipped_to_leave_room_for_the_tag() {
+        let (l, r) = fit_paths("/short", "/a/very/long/path/to/the/working/tree", 30);
+        assert_eq!(l, "/short");
+        assert!(r.chars().count() <= 24 && r.starts_with('…') && r.ends_with("tree"));
+        let (l, r) = fit_paths(&"x".repeat(80), &"y".repeat(80), 40);
+        assert_eq!((l.chars().count(), r.chars().count()), (20, 20));
+        assert_eq!(fit_paths("a", "b", 40), ("a".into(), "b".into()));
+        assert_eq!(fit_paths("abc", "def", 0), ("…".into(), "…".into()));
+    }
 
     #[test]
     fn clip_keeps_the_end_of_long_paths() {

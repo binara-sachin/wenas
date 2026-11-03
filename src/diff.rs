@@ -56,13 +56,15 @@ fn key(doc: &Document, i: usize, ws: Whitespace) -> Cow<'_, [u8]> {
     match ws {
         Whitespace::Off => out.extend_from_slice(line),
         Whitespace::All => out.extend(line.iter().copied().filter(|b| !b.is_ascii_whitespace())),
+        // `-b`: a run of whitespace is one space (including leading indentation,
+        // so adding indentation is still a change); trailing whitespace is dropped.
         Whitespace::Change => {
             let mut in_ws = false;
             for &b in line {
                 if b.is_ascii_whitespace() {
                     in_ws = true;
                 } else {
-                    if in_ws && !out.is_empty() {
+                    if in_ws {
                         out.push(b' ');
                     }
                     in_ws = false;
@@ -145,6 +147,29 @@ mod tests {
         assert!(d("a b \n", "a b\n", Whitespace::Change).is_empty());
         assert_eq!(d("ab\n", "a b\n", Whitespace::Change).len(), 1);
         assert!(d("ab\n", "a b\n", Whitespace::All).is_empty());
+    }
+
+    #[test]
+    fn dash_b_still_sees_added_or_removed_indentation() {
+        // git diff -b: a run of whitespace is one space, not nothing.
+        assert_eq!(d("foo\n", "    foo\n", Whitespace::Change).len(), 1);
+        assert_eq!(d("    foo\n", "foo\n", Whitespace::Change).len(), 1);
+        assert!(
+            d("  foo\n", "\tfoo\n", Whitespace::Change).is_empty(),
+            "different runs are equal"
+        );
+        assert!(
+            d("foo  \n", "foo\n", Whitespace::Change).is_empty(),
+            "trailing whitespace is ignored"
+        );
+        assert!(
+            d("a\n   \nb\n", "a\n\nb\n", Whitespace::Change).is_empty(),
+            "blank == whitespace-only"
+        );
+        assert!(
+            d("foo\n", "    foo\n", Whitespace::All).is_empty(),
+            "-w ignores indentation entirely"
+        );
     }
 
     #[test]

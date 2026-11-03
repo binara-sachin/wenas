@@ -280,8 +280,34 @@ pub fn parse_osc11(reply: &str) -> Option<bool> {
     Some(0.2126 * r + 0.7152 * g + 0.0722 * b < 0.5)
 }
 
+/// What the terminal said in answer to our two queries.
+#[derive(Debug, PartialEq, Eq)]
+pub enum QueryReply {
+    /// Still waiting for the DA1 reply that ends the exchange.
+    Incomplete,
+    /// The exchange is over. `Some(true)` means a dark background.
+    Done(Option<bool>),
+}
+
+/// Interpret the bytes read so far. We send the background query (OSC 11)
+/// followed by a primary device attributes query (`ESC [ c`). Terminals answer
+/// in order, so once the DA1 reply (`ESC [ ? ... c`) has arrived, a background
+/// reply has either already come or never will (tmux with nothing to forward,
+/// or a terminal that ignores OSC 11). No timeout is needed to tell the two apart,
+/// and no late reply is left behind to be read as key presses.
+pub fn parse_query_reply(bytes: &[u8]) -> QueryReply {
+    let text = String::from_utf8_lossy(bytes);
+    let Some(da1) = text.find("\x1b[?") else {
+        return QueryReply::Incomplete;
+    };
+    if !text[da1..].contains('c') {
+        return QueryReply::Incomplete;
+    }
+    QueryReply::Done(parse_osc11(&text[..da1]))
+}
+
 /// Ask the terminal for its background colour. Raw mode must already be on.
-/// Returns `Some(true)` for dark. `None` on timeout or no terminal.
+/// Returns `Some(true)` for dark, `None` if it did not say (or on timeout).
 #[cfg(unix)]
 pub fn query_dark_background(timeout_ms: i32) -> Option<bool> {
     use std::io::Write;
@@ -291,7 +317,7 @@ pub fn query_dark_background(timeout_ms: i32) -> Option<bool> {
         .write(true)
         .open("/dev/tty")
         .ok()?;
-    tty.write_all(b"\x1b]11;?\x1b\\").ok()?;
+    tty.write_all(b"\x1b]11;?\x1b\\\x1b[c").ok()?;
     tty.flush().ok()?;
     let fd = tty.as_raw_fd();
     let mut reply = Vec::new();
@@ -319,8 +345,8 @@ pub fn query_dark_background(timeout_ms: i32) -> Option<bool> {
             return None;
         }
         reply.extend_from_slice(&buf[..n as usize]);
-        if reply.ends_with(b"\x07") || reply.ends_with(b"\x1b\\") {
-            return parse_osc11(&String::from_utf8_lossy(&reply));
+        if let QueryReply::Done(dark) = parse_query_reply(&reply) {
+            return dark;
         }
     }
 }
@@ -329,13 +355,12 @@ pub fn query_dark_background(_: i32) -> Option<bool> {
     None
 }
 
-/// Decide dark vs light. Inside tmux the query is unreliable (spec S2), so
-/// default to dark there.
+/// Decide dark vs light (spec S2). `auto` asks the terminal, including inside
+/// tmux; if the terminal (or tmux) does not answer, dark is the default.
 pub fn resolve_dark(mode: ThemeMode) -> bool {
     match mode {
         ThemeMode::Dark => true,
         ThemeMode::Light => false,
-        ThemeMode::Auto if std::env::var_os("TMUX").is_some() => true,
         ThemeMode::Auto => query_dark_background(150).unwrap_or(true),
     }
 }
@@ -350,6 +375,28 @@ mod tests {
         assert_eq!(parse_osc11("\x1b]11;rgb:fafa/f9f9/f5f5\x07"), Some(false));
         assert_eq!(parse_osc11("\x1b]11;rgb:ff/ff/ff\x07"), Some(false));
         assert_eq!(parse_osc11("garbage"), None);
+    }
+
+    #[test]
+    fn the_da1_reply_ends_the_background_query() {
+        let osc = "\x1b]11;rgb:fafa/f9f9/f5f5\x1b\\";
+        let da1 = "\x1b[?62;4c";
+        // Background answer first, then DA1: light.
+        assert_eq!(
+            parse_query_reply(format!("{osc}{da1}").as_bytes()),
+            QueryReply::Done(Some(false))
+        );
+        // Terminal ignored OSC 11 (or tmux had nothing to forward): DA1 alone ends it.
+        assert_eq!(parse_query_reply(da1.as_bytes()), QueryReply::Done(None));
+        // Not finished until the DA1 reply is complete.
+        assert_eq!(parse_query_reply(osc.as_bytes()), QueryReply::Incomplete);
+        assert_eq!(parse_query_reply(b"\x1b[?62;4"), QueryReply::Incomplete);
+        assert_eq!(parse_query_reply(b""), QueryReply::Incomplete);
+        let dark = "\x1b]11;rgb:1b1b/1f1f/2727\x07";
+        assert_eq!(
+            parse_query_reply(format!("{dark}{da1}").as_bytes()),
+            QueryReply::Done(Some(true))
+        );
     }
 
     #[test]

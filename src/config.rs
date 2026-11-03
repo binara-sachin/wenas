@@ -64,14 +64,35 @@ impl Default for Config {
     }
 }
 
-const KNOWN_KEYS: &[&str] = &[
-    "theme",
-    "tab_width",
-    "whitespace",
-    "unified_below_columns",
-    "colors",
-    "directory",
+/// Top-level keys, with the keys allowed inside a section (`None` for a plain
+/// value or a free-form table whose entries are validated separately).
+const SCHEMA: &[(&str, Option<&[&str]>)] = &[
+    ("theme", None),
+    ("tab_width", None),
+    ("whitespace", None),
+    ("unified_below_columns", None),
+    ("colors", None),
+    ("directory", Some(&["exclude", "show_identical"])),
 ];
+
+/// Warnings for every key the config does not know, at any depth.
+fn unknown_keys(table: &toml::Table) -> Vec<String> {
+    let mut out = Vec::new();
+    for (key, value) in table {
+        match SCHEMA.iter().find(|(k, _)| k == key) {
+            None => out.push(format!("unknown config key `{key}` ignored")),
+            Some((_, Some(allowed))) => {
+                if let Some(inner) = value.as_table() {
+                    for k in inner.keys().filter(|k| !allowed.contains(&k.as_str())) {
+                        out.push(format!("unknown config key `{key}.{k}` ignored"));
+                    }
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    out
+}
 
 pub fn default_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/wenas/config.toml"))
@@ -80,11 +101,7 @@ pub fn default_path() -> Option<PathBuf> {
 /// Parse config text. Returns the config plus warnings (unknown keys).
 pub fn parse(text: &str) -> Result<(Config, Vec<String>), String> {
     let table: toml::Table = text.parse().map_err(|e| format!("{e}"))?;
-    let warnings = table
-        .keys()
-        .filter(|k| !KNOWN_KEYS.contains(&k.as_str()))
-        .map(|k| format!("unknown config key `{k}` ignored"))
-        .collect();
+    let warnings = unknown_keys(&table);
     let mut cfg: Config = table.try_into().map_err(|e| format!("{e}"))?;
     cfg.tab_width = cfg.tab_width.clamp(1, 16);
     let mut warnings: Vec<String> = warnings;
@@ -157,6 +174,21 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert!(w[0].contains("bogus"));
         assert_eq!(c.tab_width, 4);
+    }
+
+    #[test]
+    fn unknown_keys_inside_sections_warn_too() {
+        let (c, w) =
+            parse("[directory]\nbogus = 1\nshow_identical = true\nexclude = [\"x\"]\n").unwrap();
+        assert_eq!(
+            w,
+            vec!["unknown config key `directory.bogus` ignored".to_string()]
+        );
+        assert!(c.directory.show_identical, "known keys still apply");
+        let (_, w) = parse("[directory]\nexclude = []\n").unwrap();
+        assert!(w.is_empty());
+        let (_, w) = parse("top = 1\n[directory]\nnope = 2\n").unwrap();
+        assert_eq!(w.len(), 2);
     }
 
     #[test]

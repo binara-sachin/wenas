@@ -527,3 +527,6 @@ CI runs on macOS and Linux.
 | D36 | Files over 100 MB are confirmed first: on `[y/N]` at the terminal in file mode, with a panel in the directory view. Declining exits 0 with "skipped". With no terminal to ask on, the file is loaded. Files over 1 GB are refused (exit 2) without asking. |
 | D37 | The help screen uses three columns from 96 columns wide so that, with the editing keys, the whitespace note still fits a 24-row terminal. |
 | D38 | `⏎` marks an unterminated last line on either side. |
+| D39 | Release builds use the `dist` profile (fat LTO, stripped, `panic = "abort"` inherited from release); the static musl binary is about 1.5 MB. The minimum supported Rust is 1.88 (verified by building with it, and checked in CI). |
+| D40 | Licensed MIT OR Apache-2.0. |
+| D41 | Benchmarks live in `benches/engine.rs` (criterion) and CI reports them on a macOS runner against the §9 targets via `scripts/bench-summary.py`; they never fail the build. Measured on a 4-core Linux VM, everything meets its target except the first screen for 100k-line files (about 380 ms against 200 ms), which is the cost of the histogram diff itself. |

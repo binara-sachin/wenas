@@ -1,0 +1,21 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist' (cargo-dist). Regenerate the workflow after editing:
+#   dist generate
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.34.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app: a curl-able script and a Homebrew formula
+installers = ["shell", "homebrew"]
+# Where the Homebrew formula is published (a personal tap, spec §11.1)
+tap = "binara-sachin/homebrew-tap"
+# Publish the formula to the tap after the GitHub release is created
+publish-jobs = ["homebrew"]
+# Target platforms: macOS and statically linked Linux (spec §11.1). No Windows.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
+# Install to $CARGO_HOME/bin and keep the installer small (no self-updater)
+install-path = "CARGO_HOME"
+install-updater = false

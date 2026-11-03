@@ -2,6 +2,15 @@
 name = "wenas"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+description = "A fast, minimal terminal diff tool: Meld-style two-way file and directory compare, built for `git difftool`"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/binara-sachin/wenas"
+homepage = "https://github.com/binara-sachin/wenas"
+readme = "README.md"
+keywords = ["diff", "tui", "git", "difftool", "merge"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["design/", ".github/", "docs/screenshots/"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -17,6 +26,22 @@ unicode-width = "0.2.3"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
+criterion = { version = "0.8.2", default-features = false }
 insta = "1.49.0"
 predicates = "3.1.4"
 proptest = "1.12.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# The profile cargo-dist builds release artifacts with.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+
+[[bench]]
+name = "engine"
+harness = false

@@ -2,6 +2,10 @@ name: CI
 on:
   push:
   pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   test:
     strategy:
@@ -17,3 +21,39 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
+
+  # The oldest Rust the crate promises to build with (Cargo.toml `rust-version`).
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked
+
+  # Benchmarks report against the spec's targets and never fail the build.
+  bench:
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo bench --bench engine -- --quick
+        continue-on-error: true
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Benchmarks (macos-latest)"
+            echo
+            echo "Targets are for an M4 Pro; shared CI runners are slower. These are tracked, never gated."
+            echo
+            python3 scripts/bench-summary.py target/criterion
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: criterion-results
+          path: target/criterion
+          if-no-files-found: ignore

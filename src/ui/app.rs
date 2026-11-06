@@ -7,7 +7,10 @@ use crate::inline::{Inline, inline_diff};
 use crate::input::EolStyle;
 use crate::ops::{Cancelled, Dir, EditLoc, OpError, SaveError, Session, Side};
 use crate::theme::Theme;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crate::ui::render::{Hit, hit_test};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -153,6 +156,8 @@ pub struct App {
     pub outcome: Option<Outcome>,
     pub eols: (EolStyle, EolStyle),
     pending: Option<char>,
+    /// A copy arrow held down: which one, and the screen cell it was pressed on.
+    pressed_arrow: Option<(Dir, u16, u16)>,
     inline_cache: HashMap<usize, Rc<Inline>>,
 }
 
@@ -188,6 +193,7 @@ impl App {
             outcome: None,
             eols: (EolStyle::None, EolStyle::None),
             pending: None,
+            pressed_arrow: None,
             inline_cache: HashMap::new(),
         };
         app.view = app.effective_view();
@@ -464,15 +470,34 @@ impl App {
     }
 
     fn scroll_sideways(&mut self, right: bool) {
-        if right {
+        let step = SIDEWAYS_STEP as isize;
+        self.scroll_columns(if right { step } else { -step });
+    }
+
+    fn scroll_columns(&mut self, delta: isize) {
+        if delta > 0 {
             // Stop when the longest visible line's end reaches the pane edge.
             let limit = self
                 .max_line_width()
                 .saturating_sub(crate::ui::render::text_width(self));
-            self.hscroll = (self.hscroll + SIDEWAYS_STEP).min(limit.max(self.hscroll));
+            self.hscroll = (self.hscroll + delta as usize).min(limit.max(self.hscroll));
         } else {
-            self.hscroll = self.hscroll.saturating_sub(SIDEWAYS_STEP);
+            self.hscroll = self.hscroll.saturating_sub(delta.unsigned_abs());
         }
+    }
+
+    /// Move the view, not the cursor, except to keep the cursor on screen: `>` and
+    /// `<` act on the hunk at the cursor, which must never be out of sight.
+    fn scroll_lines(&mut self, delta: isize) {
+        let Some(last) = self.rows.len().checked_sub(1) else {
+            return;
+        };
+        let h = self.content_height();
+        // `center_on` can leave `top` past this, which scrolling must not undo.
+        let max_top = self.rows.len().saturating_sub(h).max(self.top);
+        self.top = (self.top as isize + delta).clamp(0, max_top as isize) as usize;
+        let bottom = (self.top + h - 1).min(last);
+        self.cursor = self.cursor.clamp(self.top.min(bottom), bottom);
     }
 
     // ---- search ----
@@ -733,6 +758,86 @@ impl App {
             KeyCode::F(1) => self.help = true,
             _ => {}
         }
+    }
+
+    // ---- mouse ----
+
+    /// Mouse input only acts on the plain file view. Anything that's waiting for
+    /// an answer stays keyboard-only, so a stray click can't answer it.
+    fn takes_mouse(&self) -> bool {
+        !self.session.is_busy()
+            && self.binary.is_none()
+            && self.modal.is_none()
+            && !self.help
+            && self.prompt.is_none()
+    }
+
+    /// Wheel movement. Returns whether anything changed.
+    pub fn on_scroll(&mut self, lines: isize, columns: isize) -> bool {
+        if !self.takes_mouse() {
+            return false;
+        }
+        let before = (self.top, self.cursor, self.hscroll);
+        if lines != 0 {
+            self.scroll_lines(lines);
+        }
+        if columns != 0 {
+            self.scroll_columns(columns);
+        }
+        let changed = before != (self.top, self.cursor, self.hscroll);
+        if changed {
+            self.pointer_acted();
+        }
+        changed
+    }
+
+    /// A click moves the cursor and focus when pressed. Copying waits for the
+    /// release on the same arrow, so it can be abandoned by dragging away, and so
+    /// the press that makes a hunk current can't also copy it.
+    pub fn on_mouse(&mut self, event: MouseEvent) -> bool {
+        if matches!(event.kind, MouseEventKind::Drag(_)) {
+            return false;
+        }
+        let pressed_arrow = self.pressed_arrow.take();
+        if !self.takes_mouse() || !event.modifiers.is_empty() {
+            return false;
+        }
+        let (x, y) = (event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => match hit_test(self, x, y) {
+                Some(Hit::Arrow(dir)) => {
+                    self.pressed_arrow = Some((dir, x, y));
+                    false
+                }
+                Some(Hit::Row { row, side }) => {
+                    self.cursor = row;
+                    if let Some(side) = side {
+                        self.focus = side;
+                    }
+                    self.pointer_acted();
+                    true
+                }
+                None => false,
+            },
+            MouseEventKind::Up(MouseButton::Left) => match pressed_arrow {
+                Some((dir, px, py))
+                    if (px, py) == (x, y) && hit_test(self, x, y) == Some(Hit::Arrow(dir)) =>
+                {
+                    self.pointer_acted();
+                    self.copy(dir);
+                    true
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// A mouse action ends the same things a key press does.
+    fn pointer_acted(&mut self) {
+        self.message = None;
+        self.message_is_error = false;
+        self.pending = None;
     }
 
     fn center_top(&mut self, row: usize) {

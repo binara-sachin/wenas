@@ -92,6 +92,23 @@ wenas <(git show HEAD~3:src/main.rs) src/main.rs   # pipes are read-only
 
 In the directory view: `j` `k` move, `Enter` opens, `i` shows identical files, `/` searches names, `q` quits.
 
+
+## Mouse
+
+The keyboard does everything; the mouse is a shortcut for the common moves.
+
+| Action | Result |
+|---|---|
+| Wheel or trackpad | Scroll the diff or the list |
+| Sideways wheel or swipe | Scroll both panes sideways |
+| Click a row | Move the cursor there and focus that pane, which also makes that hunk current |
+| Click `←` or `→` in the current hunk's gutter | Copy that hunk (undo with `u`; nothing is saved until `w`) |
+| Click a file in the directory view | Select it; click it again quickly to open it |
+
+Questions such as "quit without saving?" only take keys, so a stray click can't answer them.
+
+To select text the usual way, hold **Shift** while dragging (**Option** in iTerm2). Under tmux, `mouse on` or `mouse off` both work. Set `mouse = false` in the config to leave the mouse entirely to your terminal.
+
 ## Options
 
 ```
@@ -120,6 +137,7 @@ theme = "auto"              # "auto" | "dark" | "light"
 tab_width = 4
 whitespace = "off"          # "off" | "change" | "all"
 unified_below_columns = 100
+mouse = true                # false leaves the mouse to the terminal
 
 [colors]
 # changed_bg = "#2a2f3a"

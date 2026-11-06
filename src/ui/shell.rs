@@ -16,9 +16,10 @@ use crate::input::{self, read_input};
 use crate::ops::{DiffPolicy, Session, Side};
 use crate::theme::Theme;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Instant;
 
 pub struct ShellOptions {
     pub theme: Theme,
@@ -408,6 +409,33 @@ impl Ui for Shell {
             DirAction::Open(i) => self.open_entry(i),
             DirAction::Quit => self.ask_quit(),
             DirAction::Abort => self.outcome = Some(Outcome::Abort),
+        }
+    }
+
+    fn on_scroll(&mut self, lines: isize, columns: isize) -> bool {
+        if self.large_pending.is_some() || self.quit_modal {
+            return false;
+        }
+        match self.current.and_then(|i| self.open.get_mut(&i)) {
+            Some(app) => app.on_scroll(lines, columns),
+            None => self.dir.on_scroll(lines),
+        }
+    }
+
+    fn on_mouse(&mut self, event: MouseEvent) -> bool {
+        if self.large_pending.is_some() || self.quit_modal {
+            return false;
+        }
+        if let Some(app) = self.current.and_then(|i| self.open.get_mut(&i)) {
+            return app.on_mouse(event);
+        }
+        match self.dir.on_mouse(event, Instant::now()) {
+            Some(DirAction::Open(i)) => {
+                self.open_entry(i);
+                true
+            }
+            Some(_) => true,
+            None => false,
         }
     }
 

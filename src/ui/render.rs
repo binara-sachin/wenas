@@ -3,7 +3,7 @@
 use super::app::{App, View};
 use crate::align::{Row, RowKind};
 use crate::inline::Inline;
-use crate::ops::Side;
+use crate::ops::{Dir, Side};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -123,6 +123,62 @@ fn number_width(app: &App) -> usize {
 fn pane_widths(width: u16) -> (usize, usize) {
     let left = (width as usize).saturating_sub(3) / 2;
     (left, (width as usize).saturating_sub(3 + left))
+}
+
+/// The screen row of the first content row, in the file view and the directory list.
+pub(crate) const CONTENT_Y: u16 = 2;
+
+/// Below this the screens show "terminal too small" and nothing can be clicked.
+pub(crate) fn too_small(width: u16, height: u16) -> bool {
+    width < 30 || height < 5
+}
+
+/// The column where the 3-column gutter starts.
+fn gutter_x(app: &App) -> u16 {
+    match app.view {
+        View::SideBySide => pane_widths(app.width).0 as u16,
+        View::Unified => {
+            let n = number_width(app) as u16;
+            1 + n + 1 + n + 1
+        }
+    }
+}
+
+/// What is under a screen position in the file view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hit {
+    /// A content row, and which pane when that's side by side.
+    Row { row: usize, side: Option<Side> },
+    /// A copy arrow in the current hunk's gutter (`gutter_cells`).
+    Arrow(Dir),
+}
+
+/// Map a screen position to what `draw` put there.
+pub fn hit_test(app: &App, column: u16, y: u16) -> Option<Hit> {
+    if too_small(app.width, app.height) || y < CONTENT_Y {
+        return None;
+    }
+    let offset = (y - CONTENT_Y) as usize;
+    if offset >= app.content_height() {
+        return None;
+    }
+    let row = app.top + offset;
+    let shown = app.rows.get(row)?;
+    let gx = gutter_x(app);
+    if shown.hunk.is_some() && shown.hunk == app.current_hunk() {
+        if column == gx && !app.session.left.is_readonly() {
+            return Some(Hit::Arrow(Dir::RightToLeft));
+        }
+        if column == gx + 2 && !app.session.right.is_readonly() {
+            return Some(Hit::Arrow(Dir::LeftToRight));
+        }
+    }
+    let side = match app.view {
+        View::SideBySide if column < gx => Some(Side::Left),
+        View::SideBySide if column >= gx + 3 => Some(Side::Right),
+        _ => None,
+    };
+    Some(Hit::Row { row, side })
 }
 
 /// Columns available for text in one pane (side by side) or the whole line (unified).
@@ -353,7 +409,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     let app: &App = app;
     let buf = f.buffer_mut();
-    if area.width < 30 || area.height < 5 {
+    if too_small(area.width, area.height) {
         buf.set_string(0, 0, "terminal too small", Style::default());
         return;
     }
@@ -378,7 +434,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         for y in 0..app.content_height() {
             let ri = app.top + y;
             let Some(row) = app.rows.get(ri) else { break };
-            let y = (y + 2) as u16;
+            let y = y as u16 + CONTENT_Y;
             match app.view {
                 View::SideBySide => draw_side_row(buf, &fr, area, y, ri, row),
                 View::Unified => draw_unified_row(buf, &fr, area, y, ri, row),
@@ -591,7 +647,7 @@ fn draw_side_row(buf: &mut Buffer, fr: &Frame1, area: Rect, y: u16, ri: usize, r
         }
     }
     let (g, gs) = gutter_cells(app, row.kind, in_current);
-    buf.set_stringn(lw as u16, y, &g, 3, gs);
+    buf.set_stringn(gutter_x(app), y, &g, 3, gs);
 }
 
 fn draw_unified_row(buf: &mut Buffer, fr: &Frame1, area: Rect, y: u16, ri: usize, row: &Row) {
@@ -618,7 +674,7 @@ fn draw_unified_row(buf: &mut Buffer, fr: &Frame1, area: Rect, y: u16, ri: usize
     buf.set_stringn(1, y, &l, n, nums);
     let rx = 1 + n as u16 + 1;
     buf.set_stringn(rx, y, &r, n, nums);
-    let gx = rx + n as u16 + 1;
+    let gx = gutter_x(app);
     let (g, gs) = gutter_cells(app, row.kind, in_current);
     buf.set_stringn(gx, y, &g, 3, gs);
     let Some((side, li)) = App::unified_line(row) else {
@@ -975,6 +1031,14 @@ fn draw_help(buf: &mut Buffer, app: &App, area: Rect) {
         2,
         y,
         note,
+        area.width as usize - 3,
+        Style::default().fg(t.dim),
+    );
+    let mouse = "Mouse: wheel scrolls, click moves, click ← → copies. Shift-drag selects text.";
+    buf.set_stringn(
+        2,
+        y + 1,
+        mouse,
         area.width as usize - 3,
         Style::default().fg(t.dim),
     );

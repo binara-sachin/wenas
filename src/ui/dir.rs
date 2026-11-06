@@ -1,15 +1,21 @@
 //! The directory list (spec §6.3, §7.2).
 
-use super::render::{bold, hints, hints_len, key_style, put, thousands};
+use super::render::{CONTENT_Y, bold, hints, hints_len, key_style, put, thousands, too_small};
 use crate::dircmp::{Entry, Msg, Scan, Status};
 use crate::theme::Theme;
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// Two presses on an entry this close together open it. Terminals don't report
+/// double-clicks, and the desktop's own setting isn't visible from here.
+pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// What the shell must do after a key press in the list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +44,7 @@ pub struct DirView {
     pub show_identical: bool,
     pub cursor: usize,
     pub top: usize,
+    pub width: u16,
     pub height: u16,
     pub scanning: bool,
     pub files_seen: usize,
@@ -51,6 +58,8 @@ pub struct DirView {
     pub message_is_error: bool,
     pub help: bool,
     pending_g: bool,
+    /// The entry last pressed, and when, to recognise a double-click.
+    last_click: Option<(usize, Instant)>,
     scan: Option<Scan>,
     started: Instant,
 }
@@ -71,6 +80,7 @@ impl DirView {
             show_identical,
             cursor: 0,
             top: 0,
+            width: 80,
             height: 24,
             scanning: true,
             files_seen: 0,
@@ -83,6 +93,7 @@ impl DirView {
             message_is_error: false,
             help: false,
             pending_g: false,
+            last_click: None,
             scan: Some(scan),
             started: Instant::now(),
         };
@@ -331,6 +342,73 @@ impl DirView {
         DirAction::None
     }
 
+    fn takes_mouse(&self) -> bool {
+        !self.help && self.prompt.is_none()
+    }
+
+    /// A mouse action ends the same things a key press does.
+    fn pointer_acted(&mut self) {
+        self.message = None;
+        self.message_is_error = false;
+        self.pending_g = false;
+    }
+
+    /// Wheel movement, keeping the selection on screen. Returns whether anything changed.
+    pub fn on_scroll(&mut self, lines: isize) -> bool {
+        let Some(last) = self.shown.len().checked_sub(1) else {
+            return false;
+        };
+        if !self.takes_mouse() || lines == 0 {
+            return false;
+        }
+        let before = (self.top, self.cursor);
+        let h = self.content_height();
+        let max_top = self.shown.len().saturating_sub(h).max(self.top);
+        self.top = (self.top as isize + lines).clamp(0, max_top as isize) as usize;
+        let bottom = (self.top + h - 1).min(last);
+        self.cursor = self.cursor.clamp(self.top.min(bottom), bottom);
+        let changed = before != (self.top, self.cursor);
+        if changed {
+            self.pointer_acted();
+        }
+        changed
+    }
+
+    /// The position in `shown` drawn at this screen row.
+    fn row_at(&self, y: u16) -> Option<usize> {
+        if too_small(self.width, self.height) || y < CONTENT_Y {
+            return None;
+        }
+        let offset = (y - CONTENT_Y) as usize;
+        let row = self.top + offset;
+        (offset < self.content_height() && row < self.shown.len()).then_some(row)
+    }
+
+    /// A press selects an entry and a second one on it opens it. `now` is passed
+    /// in so tests can control the timing. `None` means the event did nothing.
+    pub fn on_mouse(&mut self, event: MouseEvent, now: Instant) -> Option<DirAction> {
+        if event.kind != MouseEventKind::Down(MouseButton::Left)
+            || !event.modifiers.is_empty()
+            || !self.takes_mouse()
+        {
+            return None;
+        }
+        let row = self.row_at(event.row)?;
+        let entry = self.shown[row];
+        self.cursor = row;
+        self.pointer_acted();
+        let double = self
+            .last_click
+            .is_some_and(|(e, at)| e == entry && now.duration_since(at) <= DOUBLE_CLICK);
+        if double {
+            self.last_click = None;
+            Some(DirAction::Open(entry))
+        } else {
+            self.last_click = Some((entry, now));
+            Some(DirAction::None)
+        }
+    }
+
     /// True while the screen changes on its own (a running scan).
     pub fn animating(&self) -> bool {
         self.scanning
@@ -384,9 +462,10 @@ fn fit_paths(left: &str, right: &str, budget: usize) -> (String, String) {
 const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 pub fn draw_dir(buf: &mut Buffer, dir: &mut DirView, t: &Theme, area: Rect) {
+    dir.width = area.width;
     dir.height = area.height;
     dir.ensure_visible();
-    if area.width < 30 || area.height < 5 {
+    if too_small(area.width, area.height) {
         buf.set_string(0, 0, "terminal too small", Style::default());
         return;
     }
@@ -474,7 +553,7 @@ fn draw_rows(buf: &mut Buffer, dir: &DirView, t: &Theme, area: Rect) {
         let i = dir.top + r;
         let Some(&e) = dir.shown.get(i) else { break };
         let entry = &dir.entries[e];
-        let y = (r + 2) as u16;
+        let y = r as u16 + CONTENT_Y;
         let selected = i == dir.cursor;
         if selected {
             buf.set_style(
@@ -663,6 +742,13 @@ fn draw_dir_help(buf: &mut Buffer, t: &Theme, area: Rect) {
             ],
         ),
         ("Other", &[("q", "quit"), ("Ctrl-c", "abort, exit 1")]),
+        (
+            "Mouse",
+            &[
+                ("Wheel", "scroll the list"),
+                ("Click", "select, twice to open"),
+            ],
+        ),
     ];
     let mut y = 3u16;
     for (title, items) in HELP {

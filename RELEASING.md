@@ -55,6 +55,10 @@ Automated tests cannot cover the terminal itself. Before each release, on macOS 
 - [ ] `e` opens Neovim at the cursor line and the file reloads on return.
 - [ ] `NO_COLOR=1 wenas a b` shows changes with markers and reverse video.
 - [ ] Resize the window across 100 columns: the view switches between side by side and unified.
+- [ ] Trackpad and mouse wheel scroll at a comfortable speed, stop when the gesture stops, and a sideways swipe scrolls the panes. Check tmux with `mouse on` and `mouse off`.
+- [ ] Click a row, click `→` in the gutter (then `u`), and double-click a file in the directory view.
+- [ ] Shift-drag selects text, and `mouse = false` gives the wheel and selection back to the terminal.
+- [ ] Leave Neovim after `e`: the mouse still works in wenas. After `q`, and after `kill <pid>` from another pane, moving and clicking the mouse prints nothing in the shell.
 
 ## After the release: verify the install
 

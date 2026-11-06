@@ -307,6 +307,23 @@ All hunk actions work the same way in both views.
 
 None in v1. Lines are coloured by change type; intra-line highlighting sits on top. Planned later as an optional `syntect` feature that colours only visible rows.
 
+### 7.6 Mouse
+
+A shortcut layer: every action has a key, and `mouse = false` turns it off.
+
+| Input | File view | Directory view |
+|---|---|---|
+| Wheel, trackpad | Scroll the view; the cursor moves only to stay on screen | Same |
+| Sideways wheel, swipe | Scroll both panes sideways | Nothing |
+| Left press on a row | Move the cursor there and focus that pane | Select the entry |
+| Second press within 400 ms | As above | Open the entry |
+| Left press and release on a gutter `←` or `→` | Copy the current hunk | |
+
+- **Keeping the cursor on screen** is what makes a copy safe: `>` and `<` act on the hunk at the cursor (§7.3), so it must never be out of sight. Scrolling can change the current hunk, and the gutter shows which one it is.
+- **Copying takes the release**, so dragging off the arrow abandons it. Arrows are drawn only on the current hunk, so a press in another hunk's gutter makes that hunk current and does not copy it.
+- **Keyboard only:** modals, help, the search prompt, the "Comparing" screen and the binary screen ignore the mouse, so a stray click can't answer a question. Under tmux with `mouse on`, the click that selects a pane also reaches the program in it, which is why no single click may be destructive. A focus click that lands exactly on an arrow does copy; `u` takes it back and nothing is saved until `w`.
+- **Selecting text** is left to the terminal: Shift-drag in most, Option-drag in iTerm2.
+
 ## 8. Command-line interface
 
 ### 8.1 Usage
@@ -431,6 +448,7 @@ theme = "auto"              # "auto" | "dark" | "light"
 tab_width = 4
 whitespace = "off"          # "off" | "change" | "all"
 unified_below_columns = 100
+mouse = true                # false leaves the mouse to the terminal (§7.6)
 
 [colors]
 # Override any colour by name, e.g.
@@ -532,3 +550,4 @@ CI runs on macOS and Linux.
 | D40 | Licensed MIT OR Apache-2.0. |
 | D41 | Benchmarks live in `benches/engine.rs` (criterion) and CI reports them on a macOS runner against the §9 targets via `scripts/bench-summary.py`; they never fail the build. Measured on a 4-core Linux VM (the directory compare was 1.7 s before D31's pool, 0.37 s after), everything meets its target except the first screen for 100k-line files (about 380 ms against 200 ms), which is the cost of the histogram diff itself. |
 | D42 | Module layout follows §5.2: `document` owns loading and read-only state (`Access`, with a `ReadOnlyReason` so a read-only side always has a reason to show), `ops` owns undo/redo and saving, `editor` owns the `$EDITOR` handoff, `cli` maps outcomes to exit codes, `run` starts the right screen so `main` only parses arguments, and `worker` owns background jobs and their cancellation (diffs and the directory scan both use it). |
+| D43 | Mouse support is a shortcut layer over the keyboard (§7.6). wenas asks only for `?1002` and `?1006`, not crossterm's `EnableMouseCapture`, whose `?1003` reports every pointer movement. The event loop sums a burst of wheel events into one frame and skips drawing for events that change nothing, because a scrolling frame takes about 7 ms at 200×50 before the terminal draws it. Reporting is turned off for `$EDITOR` and on panic, and `SIGTERM` and `SIGHUP` now restore the terminal, since a killed wenas would otherwise leave clicks printing escape codes into the shell. In-app text selection is left out: tmux drops an application's OSC 52 clipboard write under its default `set-clipboard external`, so Shift-drag (the terminal's own selection) is the supported way to copy text. |

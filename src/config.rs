@@ -46,6 +46,8 @@ pub struct Config {
     pub tab_width: usize,
     pub whitespace: WhitespaceSetting,
     pub unified_below_columns: u16,
+    /// Ask the terminal for mouse reports. Off leaves the mouse to the terminal.
+    pub mouse: bool,
     /// Colour overrides by name, as `#rrggbb`.
     pub colors: std::collections::BTreeMap<String, String>,
     pub directory: DirectoryConfig,
@@ -58,6 +60,7 @@ impl Default for Config {
             tab_width: 4,
             whitespace: WhitespaceSetting::Off,
             unified_below_columns: 100,
+            mouse: true,
             colors: Default::default(),
             directory: DirectoryConfig::default(),
         }
@@ -71,6 +74,7 @@ const SCHEMA: &[(&str, Option<&[&str]>)] = &[
     ("tab_width", None),
     ("whitespace", None),
     ("unified_below_columns", None),
+    ("mouse", None),
     ("colors", None),
     ("directory", Some(&["exclude", "show_identical"])),
 ];
@@ -166,6 +170,14 @@ mod tests {
         assert_eq!(c.theme, ThemeMode::Light);
         assert_eq!(c.tab_width, 8);
         assert_eq!(c.whitespace, WhitespaceSetting::All);
+    }
+
+    #[test]
+    fn mouse_is_on_unless_turned_off() {
+        assert!(parse("").unwrap().0.mouse);
+        let (c, w) = parse("mouse = false\n").unwrap();
+        assert!(!c.mouse);
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]

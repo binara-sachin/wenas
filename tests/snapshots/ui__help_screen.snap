@@ -20,5 +20,5 @@ expression: text(&mut a)
 
 
   When whitespace is ignored, whitespace-only changes are hidden and can't be copied.
-
+  Mouse: wheel scrolls, click moves, click ← → copies. Shift-drag selects text.
  1/4   whitespace off  LF | LF

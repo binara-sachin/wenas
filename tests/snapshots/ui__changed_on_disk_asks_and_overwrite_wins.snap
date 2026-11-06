@@ -2,13 +2,13 @@
 source: tests/ui.rs
 expression: text(&mut a)
 ---
- left.rs                                            right.rs  [+]
+ left.rs ↔ right.rs
+ v view split   W ws off   z unchanged shown   / find                     0 hunks · 0 changed lines
 
-  1  a                                               1  a
-▎ 2  B                                             ▎ 2  B
-  3  c                                               3  c
-
-
+ left.rs  LF                                       right.rs  LF  [+]
+   1  a                                              1  a
+   2  B                                              2  B
+   3  c                                              3  c
 
 
 
@@ -18,7 +18,7 @@ expression: text(&mut a)
 
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- right.rs changed on disk after you opened it.
- Another program changed it. Your 1 edit isn't in that version.
+  right.rs changed on disk after you opened it.
+  Another program changed it. Your 1 edit isn't in that version.
 
- o Overwrite with your version    r Reload from disk, dropping your changes    Esc Cancel
+  o Overwrite with your version    r Reload from disk, dropping your changes    Esc Cancel

@@ -2,22 +2,22 @@
 source: tests/dir.rs
 expression: body(&mut s)
 ---
- show  i [x] identical   m [x] missing   b [x] binary   . [x] hidden
-  =  ├── Cargo.toml
-     ├── assets/
-  B  │   └── logo.png                                    binary, differs at byte 2
-  T  ├── config                                          file on left, directory on right
-     ├── docs/
-  =  │   ├── architecture.md
-  L  │   └── old-flow.md                                 only on left
-     └── src/
-         ├── auth/
-  R      │   ├── refresh.rs                              only on right
-  M      │   ├── session.rs
-  M      │   └── token.rs
-  =      └── main.rs
+ show  i ● identical   m ● one side   b ● binary   . ● hidden   / find                           9 of 9 files
+
+ =    Cargo.toml
+    ▾ assets/                                                                                              1
+ B      logo.png                                                                   binary, differs at byte 2
+ T    config                                                                file on left, directory on right
+    ▾ docs/                                                                                                1
+ =      architecture.md
+ L      old-flow.md                                                                             only on left
+    ▾ src/                                                                                                 3
+      ▾ auth/                                                                                              3
+ R        refresh.rs                                                                           only on right
+ M        session.rs
+ M        token.rs
+ =      main.rs
 
 
 
-
- 9 files   6 differ  3 identical                                         Enter open  i hide identical  q quit
+ src/auth/session.rs   modified                               Enter open   h l fold folder   F1 help   q quit

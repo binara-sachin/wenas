@@ -2,13 +2,13 @@
 source: tests/ui.rs
 expression: text(&mut a)
 ---
- a/windows.rs                                       windows.rs
+ a/windows.rs ↔ windows.rs
+ v view split   W ws off   z unchanged shown   / find                       1 hunk · 1 changed line
 
-  1  fn a() {                                        1  fn a() {
-  2      one();                                      2      one();
-▎ 3      two();                                 ←~→▎ 3      TWO();
-  4  }                                               4  }
+ a/windows.rs  CRLF                                windows.rs  LF
+   1  fn a() {                                       1  fn a() {
+   2      one();                                     2      one();
+   3      two();                               ←~→   3      TWO();
+   4  }                                              4  }
 
-
-
- 1/1   whitespace off  CRLF | LF                   > copy to right  < copy to left  u undo  F1 help
+ hunk 1 of 1   line 3               > copy right   < copy left   u undo   w save   e edit   F1 help

@@ -21,7 +21,11 @@ use wenas::ui::{App, BinaryInfo, View, ViewConfig};
 
 const SIZE: (u16, u16) = (100, 20);
 /// The screen row of the first content row.
-const TOP: u16 = 2;
+/// The first content row: under the title bar, toolbar, a blank row and
+/// the pane headers.
+const TOP: u16 = 4;
+/// The directory list's first row (it has no pane headers).
+const LIST_TOP: u16 = 3;
 
 fn theme() -> Theme {
     Theme::new(true, Depth::True, false)
@@ -191,7 +195,9 @@ fn click_moves_the_cursor_to_the_row_on_screen_and_focuses_that_pane() {
 fn clicks_outside_the_rows_do_nothing() {
     let mut a = app_from("a\nb\n", "a\nc\n", false);
     let before = a.cursor;
-    for y in [0, 1, TOP + 5, SIZE.1 - 1] {
+    // The title bar (no back control here), the blank row, the pane headers,
+    // below the last line and the status bar.
+    for y in [0, 2, 3, TOP + 5, SIZE.1 - 1] {
         assert!(!a.on_mouse(down(5, y)), "row {y}");
     }
     assert_eq!(a.cursor, before);
@@ -448,7 +454,7 @@ fn the_list_scrolls_and_stays_scrolled_after_drawing() {
     assert_eq!(s.dir.top, 6);
     assert!(s.dir.cursor >= 6);
     s.on_scroll(10_000, 0);
-    assert_eq!(s.dir.top, 60 - (SIZE.1 as usize - 3));
+    assert_eq!(s.dir.top, 60 - (SIZE.1 as usize - 4));
     assert!(!s.on_scroll(1, 0), "already at the end");
 }
 
@@ -457,7 +463,7 @@ fn an_empty_list_ignores_the_wheel() {
     let t = tree(0);
     let mut s = shell(&t);
     assert!(!s.on_scroll(3, 0));
-    assert!(!s.on_mouse(down(5, TOP)));
+    assert!(!s.on_mouse(down(5, LIST_TOP)));
 }
 
 #[test]
@@ -465,7 +471,7 @@ fn a_click_selects_the_row_on_screen() {
     let t = tree(40);
     let mut s = shell(&t);
     s.on_scroll(5, 0);
-    assert!(s.on_mouse(down(5, TOP + 2)));
+    assert!(s.on_mouse(down(5, LIST_TOP + 2)));
     assert_eq!(s.dir.cursor, 7);
     assert_eq!(rel(&s, s.dir.cursor), Path::new("f007.txt"));
     assert_eq!(s.current, None, "one click doesn't open anything");
@@ -475,13 +481,13 @@ fn a_click_selects_the_row_on_screen() {
 fn a_double_click_opens_and_goes_to_the_file_view() {
     let t = tree(3);
     let mut s = shell(&t);
-    s.on_mouse(down(5, TOP + 1));
-    s.on_mouse(up(5, TOP + 1));
-    s.on_mouse(down(5, TOP + 1));
+    s.on_mouse(down(5, LIST_TOP + 1));
+    s.on_mouse(up(5, LIST_TOP + 1));
+    s.on_mouse(down(5, LIST_TOP + 1));
     let opened = s.current.expect("the second click opens the entry");
     assert_eq!(s.dir.entries[opened].rel, Path::new("f001.txt"));
     // The release of that click lands on the file view and must do nothing.
-    assert!(!s.on_mouse(up(5, TOP + 1)));
+    assert!(!s.on_mouse(up(5, LIST_TOP + 1)));
     assert!(!s.open[&opened].session.is_dirty());
 }
 
@@ -492,26 +498,26 @@ fn double_click_timing_and_target_matter() {
     let t0 = Instant::now();
     let d = &mut s.dir;
     let slow = t0 + DOUBLE_CLICK + Duration::from_millis(1);
-    assert_eq!(d.on_mouse(down(5, TOP), t0), Some(DirAction::None));
+    assert_eq!(d.on_mouse(down(5, LIST_TOP), t0), Some(DirAction::None));
     assert_eq!(
-        d.on_mouse(down(5, TOP), slow),
+        d.on_mouse(down(5, LIST_TOP), slow),
         Some(DirAction::None),
         "too slow"
     );
     let other = slow + Duration::from_millis(10);
     assert_eq!(
-        d.on_mouse(down(5, TOP + 1), other),
+        d.on_mouse(down(5, LIST_TOP + 1), other),
         Some(DirAction::None),
         "a different entry"
     );
     let again = other + Duration::from_millis(10);
     assert!(matches!(
-        d.on_mouse(down(5, TOP + 1), again),
+        d.on_mouse(down(5, LIST_TOP + 1), again),
         Some(DirAction::Open(_))
     ));
     let third = again + Duration::from_millis(10);
     assert_eq!(
-        d.on_mouse(down(5, TOP + 1), third),
+        d.on_mouse(down(5, LIST_TOP + 1), third),
         Some(DirAction::None),
         "a third click starts over"
     );
@@ -521,7 +527,7 @@ fn double_click_timing_and_target_matter() {
 fn clicks_below_the_list_or_on_the_header_do_nothing() {
     let t = tree(2);
     let mut s = shell(&t);
-    for y in [0, 1, TOP + 2, SIZE.1 - 1] {
+    for y in [0, 1, LIST_TOP + 2, SIZE.1 - 1] {
         assert!(!s.on_mouse(down(5, y)), "row {y}");
     }
     assert_eq!(s.dir.cursor, 0);
@@ -531,8 +537,8 @@ fn clicks_below_the_list_or_on_the_header_do_nothing() {
 fn the_shell_passes_the_mouse_to_an_open_file_and_back() {
     let t = tree(2);
     let mut s = shell(&t);
-    s.on_mouse(down(5, TOP));
-    s.on_mouse(down(5, TOP));
+    s.on_mouse(down(5, LIST_TOP));
+    s.on_mouse(down(5, LIST_TOP));
     let idx = s.current.unwrap();
     draw_shell(&mut s);
     let before = s.dir.cursor;
@@ -541,7 +547,7 @@ fn the_shell_passes_the_mouse_to_an_open_file_and_back() {
     assert_eq!(s.dir.cursor, before);
     s.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     assert_eq!(s.current, None);
-    assert!(s.on_mouse(down(5, TOP + 1)));
+    assert!(s.on_mouse(down(5, LIST_TOP + 1)));
     assert_eq!(s.dir.cursor, 1);
 }
 
@@ -551,7 +557,7 @@ fn the_quit_question_stays_keyboard_only() {
     let mut s = shell(&t);
     s.quit_modal = true;
     assert!(!s.on_scroll(1, 0));
-    assert!(!s.on_mouse(down(5, TOP + 1)));
+    assert!(!s.on_mouse(down(5, LIST_TOP + 1)));
     assert_eq!(s.dir.cursor, 0);
     assert!(s.quit_modal);
     assert_eq!(s.outcome, None);
@@ -563,11 +569,11 @@ fn help_and_the_search_prompt_ignore_the_mouse_in_the_list() {
     let mut s = shell(&t);
     s.on_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
     assert!(!s.on_scroll(3, 0));
-    assert!(!s.on_mouse(down(5, TOP + 1)));
+    assert!(!s.on_mouse(down(5, LIST_TOP + 1)));
     s.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     s.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
     assert!(!s.on_scroll(3, 0));
-    assert!(!s.on_mouse(down(5, TOP + 1)));
+    assert!(!s.on_mouse(down(5, LIST_TOP + 1)));
     assert_eq!((s.dir.top, s.dir.cursor), (0, 0));
 }
 
@@ -583,16 +589,16 @@ fn a_double_click_on_a_folder_folds_it_and_another_unfolds_it() {
     }
     let mut s = shell(&t);
     let all = s.dir.visible.len();
-    assert!(s.on_mouse(down(5, TOP)));
+    assert!(s.on_mouse(down(5, LIST_TOP)));
     assert_eq!(s.dir.visible.len(), all, "one click only selects");
-    s.on_mouse(up(5, TOP));
-    s.on_mouse(down(5, TOP));
+    s.on_mouse(up(5, LIST_TOP));
+    s.on_mouse(down(5, LIST_TOP));
     assert_eq!(s.dir.visible.len(), 1, "folded");
     assert_eq!(s.current, None, "a folder never opens");
-    s.on_mouse(up(5, TOP));
-    s.on_mouse(down(5, TOP));
-    s.on_mouse(up(5, TOP));
-    s.on_mouse(down(5, TOP));
+    s.on_mouse(up(5, LIST_TOP));
+    s.on_mouse(down(5, LIST_TOP));
+    s.on_mouse(up(5, LIST_TOP));
+    s.on_mouse(down(5, LIST_TOP));
     assert_eq!(s.dir.visible.len(), all, "unfolded");
 }
 
@@ -622,18 +628,35 @@ fn a_click_on_a_filter_chip_flips_it() {
     let t = tree(0);
     let mut s = shell(&t);
     draw_shell(&mut s);
-    let bar = TOP - 1;
-    // "show  i [ ] identical   m [x] missing   b [x] binary   . [x] hidden"
+    let bar = 1;
+    // " show  i ○ identical   m ● one side   b ● binary   . ● hidden"
     assert!(s.on_mouse(down(10, bar)));
     assert!(s.dir.filters.identical);
     assert!(s.on_mouse(down(30, bar)));
     assert!(!s.dir.filters.missing);
     assert!(
-        !s.on_mouse(down(23, bar)),
+        !s.on_mouse(down(21, bar)),
         "the gap between chips does nothing"
     );
     assert!(!s.on_mouse(down(3, bar)), "nor does the label");
     s.on_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
     assert!(!s.on_mouse(down(10, bar)), "help ignores the bar");
     assert!(s.dir.filters.identical);
+}
+
+#[test]
+fn the_back_control_and_toolbar_respond_to_clicks() {
+    let t = tree(2);
+    let mut s = shell(&t);
+    s.on_mouse(down(5, LIST_TOP));
+    s.on_mouse(down(5, LIST_TOP));
+    let idx = s.current.unwrap();
+    draw_shell(&mut s);
+    // The toolbar's `v` control switches the view, like the key.
+    assert_eq!(s.open[&idx].view, View::SideBySide);
+    assert!(s.on_mouse(down(3, 1)));
+    assert_eq!(s.open[&idx].view, View::Unified);
+    // " ‹ files " goes back to the list.
+    assert!(s.on_mouse(down(3, 0)));
+    assert_eq!(s.current, None);
 }

@@ -374,7 +374,8 @@ fn copy_hunk_edits_the_target_and_marks_it_dirty() {
     assert!(a.session.right.is_dirty() && !a.session.left.is_dirty());
     assert_eq!(a.message.as_deref(), Some("hunk 1 copied to right"));
     let s = text(&mut a);
-    assert!(s.lines().next().unwrap().contains("[+]"), "{s}");
+    // The right pane's header, on the row under the toolbar's blank row.
+    assert!(s.lines().nth(3).unwrap().contains("[+]"), "{s}");
 }
 
 #[test]
@@ -666,19 +667,148 @@ fn help_lists_the_editing_keys() {
     }
 }
 
+/// The colour of the first cell on the status bar showing `needle`.
+fn status_fg(a: &mut App, needle: &str) -> Color {
+    let (term, s) = render(a);
+    let y = a.height - 1;
+    let line = s.lines().nth(y as usize).unwrap();
+    let col = line[..line
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle}: {line}"))]
+        .chars()
+        .count() as u16;
+    term.backend().buffer()[(col, y)].fg
+}
+
 #[test]
 fn status_hints_reflect_which_sides_are_writable() {
-    let s = text(&mut app((100, 20)));
-    let last = s.lines().rev().find(|l| !l.is_empty()).unwrap();
-    assert!(
-        last.contains("> copy to right") && !last.contains("< copy to left"),
-        "{last}"
-    );
+    // Actions that can't be taken are dimmed, not hidden, so the bar never jumps.
+    let t = theme();
+    let mut a = app((100, 20));
+    assert_eq!(status_fg(&mut a, "> copy right"), t.amber);
+    assert_eq!(status_fg(&mut a, "< copy left"), t.off);
     let (_d, mut a) = files_app("a\n", "b\n");
+    assert_eq!(status_fg(&mut a, "> copy right"), t.amber);
+    assert_eq!(status_fg(&mut a, "< copy left"), t.amber);
+}
+
+// ---- Folding, zones and narrow terminals ----
+
+/// 60 lines with changes on lines 10 and 40 (counting from 1).
+fn long_app(size: (u16, u16)) -> App {
+    let left: String = (1..=60).map(|i| format!("line {i}\n")).collect();
+    let right = left
+        .replace("line 10\n", "LINE 10\n")
+        .replace("line 40\n", "LINE 40\n");
+    app_with(&left, &right, size, ViewConfig::default())
+}
+
+#[test]
+fn z_folds_unchanged_runs_keeping_three_lines_around_each_hunk() {
+    let mut a = long_app((100, 30));
+    key(&mut a, 'z');
+    assert!(a.fold);
     let s = text(&mut a);
+    for needle in [
+        "lines 1 to 6 unchanged",
+        "lines 14 to 36 unchanged",
+        "line 44 to end of file unchanged",
+        "z to unfold",
+        "unchanged folded",
+    ] {
+        assert!(s.contains(needle), "{needle}\n{s}");
+    }
+    // 1 fold + 3 + hunk + 3 + fold + 3 + hunk + 3 + fold.
+    assert_eq!(a.rows.len(), 17);
+    // Hunks still step, and the cursor stays on the hunk across the toggle.
+    key(&mut a, 'J');
+    assert_eq!(a.cursor_state(), "hunk 2 of 2");
+    key(&mut a, 'z');
+    assert!(!a.fold);
+    assert_eq!(a.rows.len(), 60);
+    assert_eq!(a.cursor_state(), "hunk 2 of 2");
+    assert_eq!(a.cursor_line(), 40);
+}
+
+#[test]
+fn search_unfolds_when_a_match_is_hidden() {
+    let mut a = long_app((100, 30));
+    key(&mut a, 'z');
+    for c in "/line 25".chars() {
+        key(&mut a, c);
+    }
+    press(&mut a, KeyCode::Enter);
+    assert!(!a.fold, "the match was in folded lines");
+    assert_eq!(a.cursor_line(), 25);
+}
+
+#[test]
+fn the_status_bar_says_where_the_cursor_is_in_words() {
+    let mut a = long_app((100, 30));
+    assert!(text(&mut a).contains("hunk 1 of 2   line 10"));
+    key(&mut a, 'G');
+    let s = text(&mut a);
+    assert!(s.contains("after the last hunk  K back to it"), "{s}");
+    assert!(!s.contains("-/2"));
+}
+
+#[test]
+fn the_overview_ruler_shows_hunks_and_the_screen_when_unfolded() {
+    let mut a = long_app((100, 20));
+    let s = text(&mut a);
+    let ruler: String = s
+        .lines()
+        .skip(4)
+        .take(a.content_height())
+        .map(|l| l.chars().last().unwrap_or(' '))
+        .collect();
+    assert!(
+        ruler.contains('▬') && ruler.contains('┃') && ruler.contains('│'),
+        "{ruler}"
+    );
+    key(&mut a, 'z');
+    assert!(!text(&mut a).contains('▬'), "no ruler while folded");
+}
+
+#[test]
+fn the_title_bar_shows_what_differs_and_the_toolbar_how_it_is_shown() {
+    let s = text(&mut app((140, 20)));
+    let mut lines = s.lines();
+    assert_eq!(lines.next().unwrap(), " a/src ↔ src   › auth/token.rs");
+    let toolbar = lines.next().unwrap();
+    assert!(
+        toolbar.starts_with(
+            " v view split     W whitespace off     z unchanged lines shown     / find"
+        ),
+        "{toolbar}"
+    );
+    assert!(toolbar.ends_with("4 hunks · 5 changed lines"), "{toolbar}");
+    // 100 to 139 columns: short labels; under 100: key and value only.
+    let s = text(&mut app((110, 20)));
+    assert!(s.contains(" v view split   W ws off   z unchanged shown   / find"));
+    let s = text(&mut app((80, 20)));
+    assert!(s.contains(" v unified   W ws off   z all lines"), "{s}");
+}
+
+#[test]
+fn status_hints_shrink_to_help_on_narrow_terminals() {
+    let s = text(&mut app((58, 20)));
     let last = s.lines().rev().find(|l| !l.is_empty()).unwrap();
     assert!(
-        last.contains("> copy to right") && last.contains("< copy to left"),
+        last.ends_with("F1 help") && !last.contains("copy"),
         "{last}"
     );
+}
+
+#[test]
+fn f_steps_ask_the_list_or_say_there_is_none() {
+    let mut a = app((100, 20));
+    key(&mut a, ']');
+    key(&mut a, 'f');
+    assert_eq!(a.outcome, None);
+    assert_eq!(a.message.as_deref(), Some("only one file to compare"));
+    a.in_directory = true;
+    key(&mut a, ']');
+    key(&mut a, 'f');
+    assert_eq!(a.outcome, Some(Outcome::NextFile));
 }

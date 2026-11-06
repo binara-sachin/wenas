@@ -1,6 +1,7 @@
 //! Terminal UI (spec §6, §7): file view, help, binary screen.
 
 pub mod app;
+pub mod chrome;
 pub mod dir;
 pub mod render;
 pub mod shell;

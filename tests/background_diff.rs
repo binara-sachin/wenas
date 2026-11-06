@@ -153,7 +153,7 @@ fn the_first_diff_becomes_the_normal_view_when_it_arrives() {
     gate.open();
     wait_idle(&mut a);
     let v = screen(&mut a);
-    assert!(v.contains("1/1") && v.contains("copy to right"), "{v}");
+    assert!(v.contains("hunk 1 of 1") && v.contains("copy right"), "{v}");
     assert_eq!(a.outcome, None);
 }
 
@@ -186,7 +186,9 @@ fn a_slow_re_diff_after_a_copy_blocks_edits_then_completes() {
     assert!(a.session.hunks.is_empty());
     assert_eq!(a.message.as_deref(), Some("hunk 1 copied to right"));
     assert_eq!(a.session.right.to_bytes(), b"a\nB\nc\n");
-    assert!(screen(&mut a).contains("-/0"));
+    // The message stands in for the cursor's state until the next key.
+    assert!(screen(&mut a).contains("hunk 1 copied to right"));
+    assert_eq!(a.cursor_state(), "no differences");
 }
 
 #[test]

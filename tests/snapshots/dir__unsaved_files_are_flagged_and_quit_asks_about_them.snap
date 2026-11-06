@@ -2,22 +2,22 @@
 source: tests/dir.rs
 expression: body(&mut s)
 ---
- show  i [ ] identical   m [x] missing   b [x] binary   . [x] hidden
-     ├── assets/
-  B  │   └── logo.png                                    binary, differs at byte 2
-  T  ├── config                                          file on left, directory on right
-     ├── docs/
-  L  │   └── old-flow.md                                 only on left
-     └── src/
-         └── auth/
-  R          ├── refresh.rs                              only on right
-  M          ├── session.rs                              unsaved changes [+]
-  M          └── token.rs                                unsaved changes [+]
+ show  i ○ identical   m ● one side   b ● binary   . ● hidden   / find    6 of 9 files  ·  3 identical hidden
 
+    ▾ assets/                                                                                              1
+ B      logo.png                                                                   binary, differs at byte 2
+ T    config                                                                file on left, directory on right
+    ▾ docs/                                                                                                1
+ L      old-flow.md                                                                             only on left
+    ▾ src/                                                                                                 3
+      ▾ auth/                                                                                              3
+ R        refresh.rs                                                                           only on right
+ M        session.rs                                                                     unsaved changes [+]
+ M        token.rs                                                                       unsaved changes [+]
 
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
- 2 files have unsaved changes
- src/auth/session.rs   1 edit
- src/auth/token.rs   1 edit
+  2 files have unsaved changes
+  src/auth/session.rs   1 edit
+  src/auth/token.rs   1 edit
 
- w Save both and quit    Q Quit without saving    Esc Keep working
+  w Save both and quit    Q Quit without saving    Esc Keep working

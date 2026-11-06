@@ -329,13 +329,7 @@ pub fn query_dark_background(timeout_ms: i32) -> Option<bool> {
         if left == 0 {
             return None;
         }
-        let mut p = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: `p` is a valid pollfd and we pass a count of 1.
-        if unsafe { libc::poll(&mut p, 1, left) } <= 0 {
+        if !wait_readable(fd, left) {
             return None;
         }
         let mut buf = [0u8; 64];
@@ -350,6 +344,36 @@ pub fn query_dark_background(timeout_ms: i32) -> Option<bool> {
         }
     }
 }
+
+/// Wait up to `ms` for `fd` to have input. This uses `select`, not `poll`: on
+/// macOS `poll` reports `POLLNVAL` for terminal devices at once, and the `read`
+/// that followed then blocked until a key came and swallowed it.
+#[cfg(unix)]
+fn wait_readable(fd: i32, ms: i32) -> bool {
+    if !(0..libc::FD_SETSIZE as i32).contains(&fd) {
+        return false;
+    }
+    let mut timeout = libc::timeval {
+        tv_sec: (ms / 1000) as _,
+        tv_usec: ((ms % 1000) * 1000) as _,
+    };
+    // SAFETY: `set` is initialised by FD_ZERO, `fd` is below FD_SETSIZE, and
+    // every pointer passed to `select` is valid for the call.
+    unsafe {
+        let mut set: libc::fd_set = std::mem::zeroed();
+        libc::FD_ZERO(&mut set);
+        libc::FD_SET(fd, &mut set);
+        libc::select(
+            fd + 1,
+            &mut set,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut timeout,
+        ) > 0
+            && libc::FD_ISSET(fd, &set)
+    }
+}
+
 #[cfg(not(unix))]
 pub fn query_dark_background(_: i32) -> Option<bool> {
     None
@@ -397,6 +421,35 @@ mod tests {
             parse_query_reply(format!("{dark}{da1}").as_bytes()),
             QueryReply::Done(Some(true))
         );
+    }
+
+    /// On macOS `poll` can't wait on a terminal device, so this runs on a real pty.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn waiting_for_terminal_input_times_out_and_then_sees_it() {
+        let (mut master, mut slave) = (0, 0);
+        // SAFETY: both out-pointers are valid; the name, termios and size are optional.
+        let rc = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, 0, "openpty failed");
+        let start = std::time::Instant::now();
+        assert!(!wait_readable(slave, 100), "nothing has been typed yet");
+        assert!(start.elapsed() >= std::time::Duration::from_millis(90));
+        // SAFETY: `master` is open and the buffer is valid.
+        unsafe { libc::write(master, b"x\n".as_ptr().cast(), 2) };
+        assert!(wait_readable(slave, 1000));
+        // SAFETY: both descriptors came from openpty and are closed once.
+        unsafe {
+            libc::close(master);
+            libc::close(slave);
+        }
     }
 
     #[test]

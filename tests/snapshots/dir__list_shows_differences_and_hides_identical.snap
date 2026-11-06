@@ -2,7 +2,7 @@
 source: tests/dir.rs
 expression: body(&mut s)
 ---
-
+ show  i [ ] identical   m [x] missing   b [x] binary   . [x] hidden
      ├── assets/
   B  │   └── logo.png                                    binary, differs at byte 2
   T  ├── config                                          file on left, directory on right
@@ -20,4 +20,4 @@ expression: body(&mut s)
 
 
 
- 9 files   6 differ  3 identical                                         Enter open  i show identical  q quit
+ 9 files   6 differ  3 identical  3 filtered out                         Enter open  i show identical  q quit

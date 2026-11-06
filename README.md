@@ -90,7 +90,7 @@ wenas <(git show HEAD~3:src/main.rs) src/main.rs   # pipes are read-only
 | `Esc` | Cancel a running scan or diff, clear the search |
 | `F1` | Help |
 
-In the directory view, files are listed as a tree: `j` `k` move, `Enter` opens a file or folds a folder, `h` `l` fold and unfold, `i` shows identical files, `/` searches names, `q` quits.
+In the directory view, files are listed as a tree: `j` `k` move, `Enter` opens a file or folds a folder, `h` `l` fold and unfold, `/` searches names, `q` quits. The filter bar shows or hides identical (`i`), missing on one side (`m`), binary (`b`) and hidden dot files (`.`).
 
 Pasted text never runs as keys: it goes into the `/` search prompt, and is ignored everywhere else, so a stray paste can't copy, save or quit.
 
@@ -105,6 +105,7 @@ The keyboard does everything; the mouse is a shortcut for the common moves.
 | Click a row | Move the cursor there and focus that pane, which also makes that hunk current |
 | Click `←` or `→` in the current hunk's gutter | Copy that hunk (undo with `u`; nothing is saved until `w`) |
 | Click a file in the directory view | Select it; click it again quickly to open it (or fold a folder) |
+| Click a filter chip in the directory view | Show or hide that kind of file |
 
 Questions such as "quit without saving?" only take keys, so a stray click can't answer them.
 
@@ -147,6 +148,9 @@ mouse = true                # false leaves the mouse to the terminal
 [directory]
 exclude = [".git", "node_modules", "target"]
 show_identical = false
+show_missing = true
+show_binary = true
+show_hidden = true
 ```
 
 The theme is detected by asking the terminal for its background colour (inside tmux it defaults to dark). `NO_COLOR` is respected: changes are then shown with gutter markers and reverse video only. The `[colors]` names are listed in [the spec](docs/wenas-spec.md#112-config-file).

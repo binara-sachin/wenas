@@ -35,6 +35,132 @@ pub struct DirSearch {
     pub current: Option<usize>,
 }
 
+/// A kind of file the list can leave out (spec §6.3). Each has a key and a
+/// chip in the filter bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Filter {
+    Identical,
+    /// Files on one side only, either side.
+    Missing,
+    Binary,
+    /// Anything with a path part starting with `.`.
+    Hidden,
+}
+
+impl Filter {
+    pub const ALL: [Filter; 4] = [
+        Filter::Identical,
+        Filter::Missing,
+        Filter::Binary,
+        Filter::Hidden,
+    ];
+
+    pub fn key(self) -> char {
+        match self {
+            Filter::Identical => 'i',
+            Filter::Missing => 'm',
+            Filter::Binary => 'b',
+            Filter::Hidden => '.',
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Filter::Identical => "identical",
+            Filter::Missing => "missing",
+            Filter::Binary => "binary",
+            Filter::Hidden => "hidden",
+        }
+    }
+
+    fn matches(self, e: &Entry) -> bool {
+        match self {
+            Filter::Identical => !e.status.differs(),
+            Filter::Missing => matches!(e.status, Status::LeftOnly | Status::RightOnly),
+            Filter::Binary => e.binary || matches!(e.status, Status::Binary { .. }),
+            Filter::Hidden => e
+                .rel
+                .components()
+                .any(|c| c.as_os_str().as_encoded_bytes().first() == Some(&b'.')),
+        }
+    }
+}
+
+/// Which kinds of file the list shows. A file is listed only when every
+/// filter it matches is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Filters {
+    pub identical: bool,
+    pub missing: bool,
+    pub binary: bool,
+    pub hidden: bool,
+}
+
+impl Default for Filters {
+    /// Everything but identical files, which are noise in most comparisons.
+    fn default() -> Self {
+        Filters {
+            identical: false,
+            missing: true,
+            binary: true,
+            hidden: true,
+        }
+    }
+}
+
+impl Filters {
+    pub fn shows_kind(&self, f: Filter) -> bool {
+        match f {
+            Filter::Identical => self.identical,
+            Filter::Missing => self.missing,
+            Filter::Binary => self.binary,
+            Filter::Hidden => self.hidden,
+        }
+    }
+
+    pub fn toggle(&mut self, f: Filter) {
+        let on = match f {
+            Filter::Identical => &mut self.identical,
+            Filter::Missing => &mut self.missing,
+            Filter::Binary => &mut self.binary,
+            Filter::Hidden => &mut self.hidden,
+        };
+        *on = !*on;
+    }
+
+    pub fn shows(&self, e: &Entry) -> bool {
+        Filter::ALL
+            .into_iter()
+            .all(|f| self.shows_kind(f) || !f.matches(e))
+    }
+}
+
+/// The screen row of the filter bar, between the header and the list.
+const FILTER_Y: u16 = 1;
+
+/// Where each filter's chip sits in the bar, as `(filter, x, width)`. Shared
+/// by drawing and clicking. Chips that don't fit are left out.
+fn chip_spans(width: u16) -> Vec<(Filter, u16, u16)> {
+    let mut out = Vec::new();
+    let mut x = 1 + FILTER_LABEL.len() as u16;
+    for f in Filter::ALL {
+        let w = chip_text(f, true).chars().count() as u16;
+        if x + w + 1 > width {
+            break;
+        }
+        out.push((f, x, w));
+        x += w + 3;
+    }
+    out
+}
+
+const FILTER_LABEL: &str = "show  ";
+
+/// "i [x] identical": the key, whether the kind is shown, its name.
+fn chip_text(f: Filter, on: bool) -> String {
+    format!("{} [{}] {}", f.key(), if on { 'x' } else { ' ' }, f.label())
+}
+
 /// What a line of the tree stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Node {
@@ -85,7 +211,7 @@ pub struct DirView {
     pub visible: Vec<usize>,
     /// Folded folders, by path, so folding survives rebuilding the tree.
     pub folded: HashSet<PathBuf>,
-    pub show_identical: bool,
+    pub filters: Filters,
     pub cursor: usize,
     pub top: usize,
     pub width: u16,
@@ -117,7 +243,7 @@ impl DirView {
     pub fn new(
         left: PathBuf,
         right: PathBuf,
-        show_identical: bool,
+        filters: Filters,
         scan: Scan,
         first: Vec<Msg>,
     ) -> DirView {
@@ -128,7 +254,7 @@ impl DirView {
             rows: Vec::new(),
             visible: Vec::new(),
             folded: HashSet::new(),
-            show_identical,
+            filters,
             cursor: 0,
             top: 0,
             width: 80,
@@ -168,7 +294,7 @@ impl DirView {
                 } else {
                     self.identical += 1;
                 }
-                let show = e.status.differs() || self.show_identical;
+                let show = self.filters.shows(&e);
                 self.entries.push(e);
                 if show {
                     self.push_entry(self.entries.len() - 1);
@@ -313,6 +439,22 @@ impl DirView {
         self.ensure_visible();
     }
 
+    /// Show or hide a kind of file, keeping the selection where it can.
+    pub fn toggle(&mut self, f: Filter) {
+        self.filters.toggle(f);
+        self.reshow();
+    }
+
+    /// Entries the filters leave out.
+    pub fn filtered_out(&self) -> usize {
+        let listed = self
+            .rows
+            .iter()
+            .filter(|r| matches!(r.node, Node::File(_)))
+            .count();
+        self.entries.len() - listed
+    }
+
     /// Recompute `visible` after folding or unfolding, keeping the cursor's row.
     fn refold(&mut self) {
         let keep = self.current_row();
@@ -366,7 +508,7 @@ impl DirView {
         self.last_top = None;
         self.last_click = None;
         for i in 0..self.entries.len() {
-            if self.show_identical || self.entries[i].status.differs() {
+            if self.filters.shows(&self.entries[i]) {
                 self.push_entry(i);
             }
         }
@@ -576,9 +718,9 @@ impl DirView {
             KeyCode::Char('h') | KeyCode::Left => self.fold_or_up(),
             KeyCode::Char('l') | KeyCode::Right => self.unfold_or_down(),
             KeyCode::Enter => return self.activate(),
-            KeyCode::Char('i') => {
-                self.show_identical = !self.show_identical;
-                self.reshow();
+            KeyCode::Char(c) if Filter::ALL.iter().any(|f| f.key() == c) => {
+                let f = Filter::ALL.into_iter().find(|f| f.key() == c).unwrap();
+                self.toggle(f);
             }
             KeyCode::Char('/') => self.prompt = Some(String::new()),
             KeyCode::Char('n') => self.step_match(false),
@@ -656,8 +798,8 @@ impl DirView {
         (offset < self.content_height() && row < self.visible.len()).then_some(row)
     }
 
-    /// A press selects a row and a second one on it opens the file or folds
-    /// the folder. `now` is passed in so tests can control the timing. `None`
+    /// A press on a filter chip flips it. A press selects a row and a second
+    /// one on it opens the file or folds the folder. `now` is passed in so tests can control the timing. `None`
     /// means the event did nothing.
     pub fn on_mouse(&mut self, event: MouseEvent, now: Instant) -> Option<DirAction> {
         if event.kind != MouseEventKind::Down(MouseButton::Left)
@@ -665,6 +807,14 @@ impl DirView {
             || !self.takes_mouse()
         {
             return None;
+        }
+        if event.row == FILTER_Y && !too_small(self.width, self.height) {
+            let (f, ..) = chip_spans(self.width)
+                .into_iter()
+                .find(|&(_, x, w)| (x..x + w).contains(&event.column))?;
+            self.pointer_acted();
+            self.toggle(f);
+            return Some(DirAction::None);
         }
         let pos = self.row_at(event.row)?;
         let row = self.visible[pos];
@@ -774,14 +924,9 @@ pub fn draw_dir(buf: &mut Buffer, dir: &mut DirView, t: &Theme, area: Rect) {
             panel
         },
     );
-    let tag = if dir.show_identical {
-        "identical shown"
-    } else {
-        "identical hidden"
-    };
-    // The paths give way (keeping their ends) so the tag always fits, however
+    // The paths give way (keeping their ends) so both stay in view, however
     // long the temp directories are (macOS paths easily exceed 60 columns).
-    let budget = (area.width as usize).saturating_sub(1 + tag.len() + 3 + HEADER_LABELS);
+    let budget = (area.width as usize).saturating_sub(2 + HEADER_LABELS);
     let (left_path, right_path) = fit_paths(
         &dir.left.display().to_string(),
         &dir.right.display().to_string(),
@@ -807,22 +952,39 @@ pub fn draw_dir(buf: &mut Buffer, dir: &mut DirView, t: &Theme, area: Rect) {
         &right_path,
         Style::default().fg(t.bright).bg(t.panel_bg),
     );
-    let tx = area.width.saturating_sub(tag.len() as u16 + 1);
-    if tx >= x + 2 {
-        let style = if dir.show_identical {
-            Style::default().fg(t.bright).bg(t.panel_bg)
-        } else {
-            dim
-        };
-        let mut x = tx;
-        put(buf, &mut x, 0, area.width, tag, style);
-    }
+    draw_filters(buf, dir, t, area);
     if dir.help {
         draw_dir_help(buf, t, area);
     } else {
         draw_rows(buf, dir, t, area);
     }
     draw_dir_status(buf, dir, t, area);
+}
+
+/// The filter bar: a chip per kind of file, bright when shown.
+fn draw_filters(buf: &mut Buffer, dir: &DirView, t: &Theme, area: Rect) {
+    let mut x = 1;
+    put(
+        buf,
+        &mut x,
+        FILTER_Y,
+        area.width,
+        FILTER_LABEL,
+        Style::default().fg(t.dim),
+    );
+    for (f, cx, _) in chip_spans(area.width) {
+        let on = dir.filters.shows_kind(f);
+        let text = chip_text(f, on);
+        let (key, rest) = text.split_at(1);
+        let mut x = cx;
+        put(buf, &mut x, FILTER_Y, area.width, key, key_style(t));
+        let style = if on {
+            Style::default().fg(t.bright)
+        } else {
+            Style::default().fg(t.dim)
+        };
+        put(buf, &mut x, FILTER_Y, area.width, rest, style);
+    }
 }
 
 fn draw_rows(buf: &mut Buffer, dir: &DirView, t: &Theme, area: Rect) {
@@ -832,8 +994,10 @@ fn draw_rows(buf: &mut Buffer, dir: &DirView, t: &Theme, area: Rect) {
     if dir.visible.is_empty() && !dir.scanning {
         let msg = if dir.entries.is_empty() {
             "No files."
-        } else {
+        } else if dir.differ == 0 && !dir.filters.identical {
             "No differences. Press i to show identical files."
+        } else {
+            "Every file is filtered out. Turn a filter on above to see more."
         };
         buf.set_stringn(
             2,
@@ -1007,6 +1171,17 @@ fn draw_dir_status(buf: &mut Buffer, dir: &DirView, t: &Theme, area: Rect) {
             &format!("  {} identical", thousands(dir.identical)),
             bg(t.muted),
         );
+        let out = dir.filtered_out();
+        if out > 0 {
+            put(
+                buf,
+                &mut x,
+                y,
+                end,
+                &format!("  {} filtered out", thousands(out)),
+                bg(t.dim),
+            );
+        }
         if let Some(s) = &dir.search {
             let pos = s.current.map_or("no matches".to_string(), |c| {
                 format!("{} of {}", c + 1, s.matches.len())
@@ -1014,7 +1189,7 @@ fn draw_dir_status(buf: &mut Buffer, dir: &DirView, t: &Theme, area: Rect) {
             put(buf, &mut x, y, end, &format!("   {pos}"), bg(t.amber));
         }
     }
-    let toggle = if dir.show_identical {
+    let toggle = if dir.filters.identical {
         "hide identical"
     } else {
         "show identical"
@@ -1053,7 +1228,10 @@ fn draw_dir_help(buf: &mut Buffer, t: &Theme, area: Rect) {
             "Files",
             &[
                 ("Enter", "open the file, fold a folder"),
-                ("i", "show or hide identical"),
+                (
+                    "i m b .",
+                    "show or hide identical, missing, binary, dot files",
+                ),
                 ("Backspace", "back here from a file"),
             ],
         ),
@@ -1071,6 +1249,7 @@ fn draw_dir_help(buf: &mut Buffer, t: &Theme, area: Rect) {
             &[
                 ("Wheel", "scroll the list"),
                 ("Click", "select, twice to open or fold"),
+                ("Click chip", "show or hide that kind"),
             ],
         ),
     ];
@@ -1104,7 +1283,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn long_header_paths_are_clipped_to_leave_room_for_the_tag() {
+    fn long_header_paths_are_clipped_to_fit() {
         let (l, r) = fit_paths("/short", "/a/very/long/path/to/the/working/tree", 30);
         assert_eq!(l, "/short");
         assert!(r.chars().count() <= 24 && r.starts_with('…') && r.ends_with("tree"));
@@ -1112,6 +1291,15 @@ mod tests {
         assert_eq!((l.chars().count(), r.chars().count()), (20, 20));
         assert_eq!(fit_paths("a", "b", 40), ("a".into(), "b".into()));
         assert_eq!(fit_paths("abc", "def", 0), ("…".into(), "…".into()));
+    }
+
+    #[test]
+    fn chips_that_do_not_fit_are_left_out() {
+        assert_eq!(chip_spans(200).len(), 4);
+        let narrow = chip_spans(40);
+        assert!(!narrow.is_empty() && narrow.len() < 4);
+        assert!(narrow.iter().all(|&(_, x, w)| x + w < 40));
+        assert!(chip_spans(10).is_empty());
     }
 
     #[test]

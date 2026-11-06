@@ -213,8 +213,8 @@ All hunk actions work the same way in both views.
 ### 6.3 Directory view
 
 ```
- left: /tmp/git-difftool.Xa12/left   right: ~/code/app   [identical hidden]
-──────────────────────────────────────────────────────────────────────────────
+ left: /tmp/git-difftool.Xa12/left   right: ~/code/app
+ show  i [ ] identical   m [x] missing   b [x] binary   . [x] hidden
      ├── assets/
  B   │   └── logo.png               binary · differs at byte 2,048
  T   ├── config                     file vs directory
@@ -231,7 +231,13 @@ All hunk actions work the same way in both views.
 
 - Results appear as the walk finds them, as a tree in the walk's name order (like `tree`). Folders appear only to hold listed files, so with identical files hidden a folder with no differences is not shown.
 - `Enter` (or `h` / `l`) folds and unfolds a folder; a folded folder shows how many files it holds. Folding survives `i`.
-- `i` toggles identical files (hidden by default).
+- The filter bar under the header shows or hides four kinds of file, each with a key and a chip that a click flips:
+  - `i` identical files (hidden by default);
+  - `m` missing files: those on one side only, either side;
+  - `b` binary files: differing, identical or one-sided;
+  - `.` hidden files: any path with a part starting with `.`, so everything under `.github/` too.
+
+  A file is listed only when every kind it belongs to is shown (a binary file on the left only goes with either `m` or `b`). The status bar counts the files left out. Toggling keeps the selection and folding, and clears the search. The `[directory]` config sets the starting state (§11.2).
 - `Enter` opens the selected file in the file view; `Backspace` returns to the list, keeping the selection.
 - A one-sided file opens against an empty pane on the other side, so its hunk can be copied across.
 
@@ -288,6 +294,9 @@ All hunk actions work the same way in both views.
 | `h` / `l`, `←` / `→` | Fold a folder, or go up to the one holding the selection / unfold a folder, or step into it |
 | `Enter` | Open the selected file, or fold / unfold the selected folder |
 | `i` | Show / hide identical files |
+| `m` | Show / hide files on one side only |
+| `b` | Show / hide binary files |
+| `.` | Show / hide hidden (dot) files |
 | `/` / `n` / `N` | Search file paths; a match inside a folded folder unfolds it |
 | `q` | Quit (asks first if any opened file has unsaved changes) |
 | `Ctrl-c` | Abort with exit code 1 |
@@ -323,6 +332,7 @@ A shortcut layer: every action has a key, and `mouse = false` turns it off.
 | Sideways wheel, swipe | Scroll both panes sideways | Nothing |
 | Left press on a row | Move the cursor there and focus that pane | Select the entry |
 | Second press within 400 ms | As above | Open the file, or fold / unfold the folder |
+| Left press on a filter chip | | Show / hide that kind of file |
 | Left press and release on a gutter `←` or `→` | Copy the current hunk | |
 
 - **Keeping the cursor on screen** is what makes a copy safe: `>` and `<` act on the hunk at the cursor (§7.3), so it must never be out of sight. Scrolling can change the current hunk, and the gutter shows which one it is.
@@ -468,6 +478,9 @@ mouse = true                # false leaves the mouse to the terminal (§7.6)
 [directory]
 exclude = [".git", "node_modules", "target"]
 show_identical = false
+show_missing = true   # files on one side only
+show_binary = true
+show_hidden = true    # names starting with `.`
 ```
 
 Colour names accepted under `[colors]`, each as `#rrggbb`: `panel_bg`, `dim`, `muted`, `bright`, `amber`, `on_amber`, `cursor_bg`, `changed_bg`, `changed_word_bg`, `added_bg`, `added_word_bg`, `removed_bg`, `removed_word_bg`, `filler`, `added_fg`, `removed_fg`, `changed_fg`, `match_bg`, `match_fg`. Unknown names and malformed values warn and are ignored; overrides are ignored under `NO_COLOR` and follow the terminal's colour depth.
@@ -564,3 +577,4 @@ CI runs on macOS and Linux.
 | D44 | Bracketed paste is always on (§7.7): pasted text never runs as commands, and only the search prompt takes it. |
 | D45 | The theme query waits for the terminal's reply with `select`, not `poll`. On macOS `poll` reports `POLLNVAL` for a terminal device straight away, so the `read` after it blocked: with a terminal that never answered, wenas stalled before drawing until a key came and then swallowed that key. Now a silent terminal costs only the 150 ms timeout, as S2 intended. |
 | D46 | The directory list is a tree (§6.3), drawn with `tree`'s `├──` / `└──` / `│` lines. The walk already emits entries in preorder (D31), so the tree is built as results stream in, with no buffering: each entry reuses the folders it shares with the previous one. Whether a row is the last of its siblings is tracked per parent and the lines are drawn from it at draw time, so a sibling that arrives later turns an earlier `└──` into `├──`. Folders are rows the cursor can stop on; `Enter`, `h` / `l` and a double-click fold them, and folding is kept by path so `i` and returning from a file keep it. Search still matches full file paths and unfolds what hides a match. A deep tree gives up its leading branch lines (marked `…`) before the name. |
+| D47 | The directory list has four filters (§6.3): identical, missing (one side only), binary and hidden (dot) files, each a key and a clickable chip in a bar on the row between the header and the list, which was blank, so the list loses no rows. They replace the header's `[identical hidden]` tag. A file is listed only if every kind it belongs to is shown. The binary flag is kept on the entry apart from its status, so it is known for identical files (`compare_files` already sniffs both starts) and one-sided files (sniffed on the pool, 8 KB each, so a large one-sided tree doesn't hold up the walk), and it survives a save that makes a file identical. Hidden means a path part starting with `.`, not the macOS hidden flag, which would cost a `stat` per entry. Chips are placed by a function of the width shared by drawing and clicking, so a click always hits what is drawn; chips that don't fit are left out. Filtering stays in the list: the file view compares one pair and has nothing to filter. |

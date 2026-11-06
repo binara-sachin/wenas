@@ -10,7 +10,7 @@ use crate::document::{Document, ReadOnlyReason};
 use crate::gitenv::mark_readonly;
 use crate::input::{self, read_input};
 use crate::ops::{DiffPolicy, Session};
-use crate::ui::dir::DirView;
+use crate::ui::dir::{DirView, Filters};
 use crate::ui::shell::{Shell, ShellOptions};
 use crate::ui::term::{confirm_large_files, run_interactive};
 use crate::ui::{App, BinaryInfo, Outcome, ViewConfig};
@@ -150,11 +150,17 @@ fn run_dir(cli: &Cli, cfg: &Config, left: &Path, right: &Path) -> anyhow::Result
         cfg.directory.exclude.clone(),
     );
     let Settings { view, ws } = Settings::new(cli, cfg);
-    let show_identical = cli.show_identical || cfg.directory.show_identical;
+    let d = &cfg.directory;
+    let filters = Filters {
+        identical: cli.show_identical || d.show_identical,
+        missing: d.show_missing,
+        binary: d.show_binary,
+        hidden: d.show_hidden,
+    };
     let (l, r) = (left.to_path_buf(), right.to_path_buf());
     let (readonly_left, readonly_right) = (cli.readonly_left, cli.readonly_right);
     let outcome = run_interactive(cfg, move |theme, size| {
-        let dir = DirView::new(l, r, show_identical, scan, Vec::new());
+        let dir = DirView::new(l, r, filters, scan, Vec::new());
         let opts = ShellOptions {
             theme,
             view,

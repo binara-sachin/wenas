@@ -2,7 +2,7 @@
 source: tests/dir.rs
 expression: body(&mut s)
 ---
-
+ show  i [x] identical   m [x] missing   b [x] binary   . [x] hidden
   =  ├── Cargo.toml
      ├── assets/
   B  │   └── logo.png                                    binary, differs at byte 2

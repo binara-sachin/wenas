@@ -13,7 +13,7 @@ use wenas::document::{Document, ReadOnlyReason};
 use wenas::ops::{Dir, Session, Side};
 use wenas::theme::{Depth, Theme};
 use wenas::ui::app::Modal;
-use wenas::ui::dir::{DOUBLE_CLICK, DirAction, DirView};
+use wenas::ui::dir::{DOUBLE_CLICK, DirAction, DirView, Filters};
 use wenas::ui::render::{Hit, draw, hit_test};
 use wenas::ui::shell::{Shell, ShellOptions};
 use wenas::ui::term::Ui;
@@ -399,7 +399,13 @@ fn tree(files: usize) -> Tree {
 
 fn shell(t: &Tree) -> Shell {
     let scan = Scan::spawn(t.left.clone(), t.right.clone(), vec![]);
-    let dir = DirView::new(t.left.clone(), t.right.clone(), false, scan, vec![]);
+    let dir = DirView::new(
+        t.left.clone(),
+        t.right.clone(),
+        Filters::default(),
+        scan,
+        vec![],
+    );
     let opts = ShellOptions {
         theme: theme(),
         view: ViewConfig::default(),
@@ -609,4 +615,25 @@ fn folding_near_the_end_scrolls_back_to_fill_the_screen() {
     key(&mut s, 'h');
     draw_shell(&mut s);
     assert_eq!((s.dir.visible.len(), s.dir.top, s.dir.cursor), (1, 0, 0));
+}
+
+#[test]
+fn a_click_on_a_filter_chip_flips_it() {
+    let t = tree(0);
+    let mut s = shell(&t);
+    draw_shell(&mut s);
+    let bar = TOP - 1;
+    // "show  i [ ] identical   m [x] missing   b [x] binary   . [x] hidden"
+    assert!(s.on_mouse(down(10, bar)));
+    assert!(s.dir.filters.identical);
+    assert!(s.on_mouse(down(30, bar)));
+    assert!(!s.dir.filters.missing);
+    assert!(
+        !s.on_mouse(down(23, bar)),
+        "the gap between chips does nothing"
+    );
+    assert!(!s.on_mouse(down(3, bar)), "nor does the label");
+    s.on_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+    assert!(!s.on_mouse(down(10, bar)), "help ignores the bar");
+    assert!(s.dir.filters.identical);
 }

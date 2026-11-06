@@ -319,7 +319,7 @@ fn the_event_loop_keeps_polling_while_a_diff_runs() {
 mod directory {
     use super::*;
     use wenas::dircmp::Scan;
-    use wenas::ui::dir::DirView;
+    use wenas::ui::dir::{DirView, Filters};
     use wenas::ui::shell::{Shell, ShellOptions};
 
     fn shell_in(dir: &tempfile::TempDir) -> Shell {
@@ -329,7 +329,7 @@ mod directory {
             std::fs::write(root.join("f.rs"), body).unwrap();
         }
         let scan = Scan::spawn(l.clone(), r.clone(), vec![]);
-        let view = DirView::new(l, r, false, scan, vec![]);
+        let view = DirView::new(l, r, Filters::default(), scan, vec![]);
         let opts = ShellOptions {
             theme: theme(),
             view: cfg(),

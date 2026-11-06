@@ -85,6 +85,9 @@ impl Status {
 pub struct Entry {
     pub rel: PathBuf,
     pub status: Status,
+    /// Either side's start looks binary. Kept apart from `status` so it is
+    /// known for identical and one-sided files too, and survives a save.
+    pub binary: bool,
 }
 
 #[derive(Debug)]
@@ -142,8 +145,17 @@ fn read_fully(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     Ok(n)
 }
 
-/// Compare two regular files (following links given as paths).
-pub fn compare_files(a: &Path, b: &Path) -> io::Result<Status> {
+/// Whether a file's start looks binary; an unreadable file counts as text.
+fn sniff(path: &Path) -> bool {
+    let mut head = vec![0u8; BINARY_SNIFF_LEN];
+    fs::File::open(path)
+        .and_then(|mut f| read_fully(&mut f, &mut head))
+        .is_ok_and(|n| looks_binary(&head[..n]))
+}
+
+/// Compare two regular files (following links given as paths). The flag says
+/// whether either looks binary.
+pub fn compare_files(a: &Path, b: &Path) -> io::Result<(Status, bool)> {
     let (mut fa, mut fb) = (fs::File::open(a)?, fs::File::open(b)?);
     let (size_a, size_b) = (fa.metadata()?.len(), fb.metadata()?.len());
     let (mut ha, mut hb) = (vec![0u8; BINARY_SNIFF_LEN], vec![0u8; BINARY_SNIFF_LEN]);
@@ -151,7 +163,7 @@ pub fn compare_files(a: &Path, b: &Path) -> io::Result<Status> {
     let (ha, hb) = (&ha[..na], &hb[..nb]);
     let binary = looks_binary(ha) || looks_binary(hb);
     if size_a != size_b && !binary {
-        return Ok(Status::Modified);
+        return Ok((Status::Modified, false));
     }
     let differ = |at: u64| {
         if binary {
@@ -166,13 +178,13 @@ pub fn compare_files(a: &Path, b: &Path) -> io::Result<Status> {
         .zip(&hb[..common])
         .position(|(x, y)| x != y)
     {
-        return Ok(differ(i as u64));
+        return Ok((differ(i as u64), binary));
     }
     if na != nb {
-        return Ok(differ(common as u64));
+        return Ok((differ(common as u64), binary));
     }
     if na < BINARY_SNIFF_LEN {
-        return Ok(Status::Identical);
+        return Ok((Status::Identical, binary));
     }
     let mut offset = na as u64;
     let (mut ba, mut bb) = (vec![0u8; CHUNK], vec![0u8; CHUNK]);
@@ -184,24 +196,30 @@ pub fn compare_files(a: &Path, b: &Path) -> io::Result<Status> {
             .zip(&bb[..common])
             .position(|(x, y)| x != y)
         {
-            return Ok(differ(offset + i as u64));
+            return Ok((differ(offset + i as u64), binary));
         }
         if na != nb {
-            return Ok(differ(offset + common as u64));
+            return Ok((differ(offset + common as u64), binary));
         }
         if na == 0 {
-            return Ok(Status::Identical);
+            return Ok((Status::Identical, binary));
         }
         offset += na as u64;
     }
 }
 
-/// A pair of regular files to compare on the pool.
+/// File work for the pool, tagged with its place in name order.
 struct Job {
     seq: u64,
     rel: PathBuf,
-    left: PathBuf,
-    right: PathBuf,
+    task: Task,
+}
+
+enum Task {
+    /// Compare a pair of regular files.
+    Compare { left: PathBuf, right: PathBuf },
+    /// A file on one side only: just sniff whether it is binary.
+    Sniff { path: PathBuf, status: Status },
 }
 
 /// A finished entry tagged with its position in name order.
@@ -247,17 +265,30 @@ impl Walker<'_> {
     fn entry(&mut self, rel: PathBuf, status: Status) {
         let seq = self.next_seq();
         // A closed channel means the UI went away; the walk just winds down.
-        let _ = self.done.send((seq, Entry { rel, status }));
+        let _ = self.done.send((
+            seq,
+            Entry {
+                rel,
+                status,
+                binary: false,
+            },
+        ));
     }
 
-    fn compare_later(&mut self, rel: PathBuf, left: PathBuf, right: PathBuf) {
+    fn later(&mut self, rel: PathBuf, task: Task) {
         let seq = self.next_seq();
-        let _ = self.jobs.send(Job {
-            seq,
-            rel,
-            left,
-            right,
-        });
+        let _ = self.jobs.send(Job { seq, rel, task });
+    }
+
+    /// A file on one side only. Regular files are sniffed on the pool, so a
+    /// large one-sided tree doesn't hold up the walk.
+    fn one_sided_file(&mut self, path: PathBuf, rel: PathBuf, kind: Kind, status: &Status) {
+        if kind == Kind::File {
+            let status = status.clone();
+            self.later(rel, Task::Sniff { path, status });
+        } else {
+            self.entry(rel, status.clone());
+        }
     }
 
     fn names(&self, dir: &Path) -> io::Result<BTreeMap<OsString, Kind>> {
@@ -286,7 +317,7 @@ impl Walker<'_> {
                     if kind == Kind::Dir {
                         self.one_sided(&p, &r, status);
                     } else {
-                        self.entry(r, status.clone());
+                        self.one_sided_file(p, r, kind, status);
                     }
                 }
             }
@@ -326,12 +357,24 @@ impl Walker<'_> {
                     self.one_sided(&rp, &rel, &Status::RightOnly);
                     continue;
                 }
-                (Some(_), None) => Status::LeftOnly,
-                (None, Some(_)) => Status::RightOnly,
+                (Some(k), None) => {
+                    self.one_sided_file(lp, rel, k, &Status::LeftOnly);
+                    continue;
+                }
+                (None, Some(k)) => {
+                    self.one_sided_file(rp, rel, k, &Status::RightOnly);
+                    continue;
+                }
                 (Some(l), Some(r)) => match self.both(l, r, &lp, &rp) {
                     Verdict::Now(status) => status,
                     Verdict::Compare => {
-                        self.compare_later(rel, lp, rp);
+                        self.later(
+                            rel,
+                            Task::Compare {
+                                left: lp,
+                                right: rp,
+                            },
+                        );
                         continue;
                     }
                 },
@@ -393,13 +436,17 @@ fn pool_worker(jobs: &Mutex<Receiver<Job>>, done: Sender<Done>, cancel: &AtomicB
         if cancel.load(Ordering::Relaxed) {
             continue; // drain the queue so the walker never blocks
         }
-        let status = match compare_files(&job.left, &job.right) {
-            Ok(s) => s,
-            Err(e) => Status::Error(read_error(&e)),
+        let (status, binary) = match job.task {
+            Task::Compare { left, right } => match compare_files(&left, &right) {
+                Ok(done) => done,
+                Err(e) => (Status::Error(read_error(&e)), false),
+            },
+            Task::Sniff { path, status } => (status, sniff(&path)),
         };
         let entry = Entry {
             rel: job.rel,
             status,
+            binary,
         };
         if done.send((job.seq, entry)).is_err() {
             return;
@@ -619,6 +666,31 @@ mod tests {
         let got = scan(&l, &r);
         assert_eq!(got[0], ("late".into(), Status::Modified));
         assert_eq!(got[1], ("same".into(), Status::Identical));
+    }
+
+    #[test]
+    fn identical_and_one_sided_files_say_whether_they_are_binary() {
+        let (_d, l, r) = trees();
+        write(&l, "same.bin", &[0, 1, 2]);
+        write(&r, "same.bin", &[0, 1, 2]);
+        write(&l, "gone.bin", &[0, 9]);
+        write(&r, "only/new.png", &[0, 9]);
+        write(&r, "notes.txt", b"plain\n");
+        write(&l, "a.txt", b"x\n");
+        write(&r, "a.txt", b"x\n");
+        let mut got = vec![];
+        let cancel = AtomicBool::new(false);
+        compare(&l, &r, &[], &cancel, &mut |m| {
+            if let Msg::Entry(e) = m {
+                got.push((e.rel.display().to_string(), e.binary));
+            }
+        });
+        let binary = |name: &str| got.iter().find(|(n, _)| n == name).unwrap().1;
+        assert!(binary("same.bin"));
+        assert!(binary("gone.bin"));
+        assert!(binary("only/new.png"));
+        assert!(!binary("notes.txt"));
+        assert!(!binary("a.txt"));
     }
 
     #[test]

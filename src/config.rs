@@ -28,6 +28,9 @@ impl From<WhitespaceSetting> for Whitespace {
 pub struct DirectoryConfig {
     pub exclude: Vec<String>,
     pub show_identical: bool,
+    pub show_missing: bool,
+    pub show_binary: bool,
+    pub show_hidden: bool,
 }
 
 impl Default for DirectoryConfig {
@@ -35,6 +38,9 @@ impl Default for DirectoryConfig {
         DirectoryConfig {
             exclude: vec![".git".into(), "node_modules".into(), "target".into()],
             show_identical: false,
+            show_missing: true,
+            show_binary: true,
+            show_hidden: true,
         }
     }
 }
@@ -76,7 +82,16 @@ const SCHEMA: &[(&str, Option<&[&str]>)] = &[
     ("unified_below_columns", None),
     ("mouse", None),
     ("colors", None),
-    ("directory", Some(&["exclude", "show_identical"])),
+    (
+        "directory",
+        Some(&[
+            "exclude",
+            "show_identical",
+            "show_missing",
+            "show_binary",
+            "show_hidden",
+        ]),
+    ),
 ];
 
 /// Warnings for every key the config does not know, at any depth.
@@ -186,6 +201,18 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert!(w[0].contains("bogus"));
         assert_eq!(c.tab_width, 4);
+    }
+
+    #[test]
+    fn directory_filters_default_to_all_but_identical() {
+        let d = DirectoryConfig::default();
+        assert!(!d.show_identical && d.show_missing && d.show_binary && d.show_hidden);
+        let (c, w) =
+            parse("[directory]\nshow_missing = false\nshow_binary = false\nshow_hidden = false\n")
+                .unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        let d = c.directory;
+        assert!(!d.show_missing && !d.show_binary && !d.show_hidden);
     }
 
     #[test]

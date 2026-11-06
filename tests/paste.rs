@@ -8,7 +8,7 @@ use wenas::document::Document;
 use wenas::ops::Session;
 use wenas::theme::{Depth, Theme};
 use wenas::ui::app::Modal;
-use wenas::ui::dir::DirView;
+use wenas::ui::dir::{DirView, Filters};
 use wenas::ui::shell::{Shell, ShellOptions};
 use wenas::ui::term::Ui;
 use wenas::ui::{App, Outcome, ViewConfig};
@@ -100,7 +100,7 @@ fn shell(dir: &std::path::Path) -> Shell {
         }
     }
     let scan = Scan::spawn(left.clone(), right.clone(), vec![]);
-    let dir = DirView::new(left, right, false, scan, vec![]);
+    let dir = DirView::new(left, right, Filters::default(), scan, vec![]);
     let opts = ShellOptions {
         theme: theme(),
         view: ViewConfig::default(),

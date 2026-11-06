@@ -17,7 +17,7 @@ use wenas::dircmp::Scan;
 use wenas::document::{Document, ReadOnlyReason};
 use wenas::ops::Session;
 use wenas::theme::{Depth, Theme};
-use wenas::ui::dir::DirView;
+use wenas::ui::dir::{DirView, Filters};
 use wenas::ui::shell::{Shell, ShellOptions};
 use wenas::ui::term::Ui;
 use wenas::ui::{App, ViewConfig};
@@ -163,7 +163,7 @@ fn directory_shell(size: (u16, u16)) -> (tempfile::TempDir, Shell) {
     std::fs::write(l.join("assets/logo.png"), [0u8, 1, 2, 3]).unwrap();
     std::fs::write(r.join("assets/logo.png"), [0u8, 1, 9, 3]).unwrap();
     let scan = Scan::spawn(l.clone(), r.clone(), vec![]);
-    let dir = DirView::new(l, r, false, scan, vec![]);
+    let dir = DirView::new(l, r, Filters::default(), scan, vec![]);
     let opts = ShellOptions {
         theme: theme(),
         view: ViewConfig::default(),

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use wenas::diff::Whitespace;
 use wenas::dircmp::Scan;
 use wenas::theme::{Depth, Theme};
-use wenas::ui::dir::DirView;
+use wenas::ui::dir::{DirView, Filter, Filters, Node};
 use wenas::ui::shell::{Shell, ShellOptions};
 use wenas::ui::term::Ui;
 use wenas::ui::{Outcome, ViewConfig};
@@ -66,13 +66,11 @@ fn theme() -> Theme {
 
 fn shell_with(t: &Tree, show_identical: bool, readonly_left: bool, size: (u16, u16)) -> Shell {
     let scan = Scan::spawn(t.left.clone(), t.right.clone(), vec![]);
-    let dir = DirView::new(
-        t.left.clone(),
-        t.right.clone(),
-        show_identical,
-        scan,
-        vec![],
-    );
+    let filters = Filters {
+        identical: show_identical,
+        ..Filters::default()
+    };
+    let dir = DirView::new(t.left.clone(), t.right.clone(), filters, scan, vec![]);
     let opts = ShellOptions {
         theme: theme(),
         view: ViewConfig::default(),
@@ -146,9 +144,9 @@ fn list_shows_differences_and_hides_identical() {
     assert!(
         screen(&mut s, (110, 20))
             .lines()
-            .next()
+            .nth(1)
             .unwrap()
-            .contains("identical hidden")
+            .contains("i [ ] identical")
     );
 }
 
@@ -158,7 +156,7 @@ fn i_toggles_identical_files_and_keeps_the_selection() {
     let mut s = shell(&t);
     select(&mut s, "src/auth/session.rs");
     key(&mut s, 'i');
-    assert!(s.dir.show_identical);
+    assert!(s.dir.filters.identical);
     assert_eq!(
         s.dir.entries[s.dir.selected().unwrap()].rel,
         Path::new("src/auth/session.rs")
@@ -167,9 +165,9 @@ fn i_toggles_identical_files_and_keeps_the_selection() {
     assert!(
         screen(&mut s, (110, 20))
             .lines()
-            .next()
+            .nth(1)
             .unwrap()
-            .contains("identical shown")
+            .contains("i [x] identical")
     );
     key(&mut s, 'i');
     assert_eq!(
@@ -287,11 +285,18 @@ fn search_unfolds_the_folder_holding_a_match() {
 fn branches_follow_entries_that_stream_in_later() {
     let t = tree();
     let scan = Scan::spawn(t.left.clone(), t.right.clone(), vec![]);
-    let mut dir = DirView::new(t.left.clone(), t.right.clone(), false, scan, vec![]);
+    let mut dir = DirView::new(
+        t.left.clone(),
+        t.right.clone(),
+        Filters::default(),
+        scan,
+        vec![],
+    );
     let entry = |rel: &str| {
         wenas::dircmp::Msg::Entry(wenas::dircmp::Entry {
             rel: rel.into(),
             status: wenas::dircmp::Status::Modified,
+            binary: false,
         })
     };
     dir.apply(entry("src/a.rs"));
@@ -582,10 +587,17 @@ fn scanning_state_is_shown_while_results_stream_in() {
     let t = tree();
     let scan = Scan::spawn(t.left.clone(), t.right.clone(), vec![]);
     // Not polled, so the view is still "scanning" with whatever was passed in.
-    let mut dir = DirView::new(t.left.clone(), t.right.clone(), false, scan, vec![]);
+    let mut dir = DirView::new(
+        t.left.clone(),
+        t.right.clone(),
+        Filters::default(),
+        scan,
+        vec![],
+    );
     dir.apply(wenas::dircmp::Msg::Entry(wenas::dircmp::Entry {
         rel: "src/auth/token.rs".into(),
         status: wenas::dircmp::Status::Modified,
+        binary: false,
     }));
     dir.apply(wenas::dircmp::Msg::Scanned(1204));
     let opts = ShellOptions {
@@ -611,7 +623,13 @@ fn scanning_state_is_shown_while_results_stream_in() {
 fn esc_stops_a_running_scan() {
     let t = tree();
     let scan = Scan::spawn(t.left.clone(), t.right.clone(), vec![]);
-    let dir = DirView::new(t.left.clone(), t.right.clone(), false, scan, vec![]);
+    let dir = DirView::new(
+        t.left.clone(),
+        t.right.clone(),
+        Filters::default(),
+        scan,
+        vec![],
+    );
     let opts = ShellOptions {
         theme: theme(),
         view: ViewConfig::default(),
@@ -682,7 +700,13 @@ fn long_paths_are_clipped_not_overflowing() {
 
 fn shell_with_limit(t: &Tree, large_file_bytes: u64) -> Shell {
     let scan = Scan::spawn(t.left.clone(), t.right.clone(), vec![]);
-    let dir = DirView::new(t.left.clone(), t.right.clone(), false, scan, vec![]);
+    let dir = DirView::new(
+        t.left.clone(),
+        t.right.clone(),
+        Filters::default(),
+        scan,
+        vec![],
+    );
     let opts = ShellOptions {
         theme: theme(),
         view: ViewConfig::default(),
@@ -771,9 +795,9 @@ fn unreadable_entries_show_a_bang_and_the_reason() {
 }
 
 #[test]
-fn the_identical_tag_survives_very_long_paths() {
+fn the_filter_bar_survives_very_long_paths() {
     // macOS temp dirs are long (/var/folders/xx/.../T/.tmpXXXX); the header must
-    // still show whether identical files are hidden. This failed on macOS CI.
+    // still leave the filter bar whole. This failed on macOS CI.
     let tmp = tempfile::tempdir().unwrap();
     let long = tmp.path().join("a-deeply-nested-directory-name".repeat(3));
     let (l, r) = (long.join("left"), long.join("right"));
@@ -786,13 +810,139 @@ fn the_identical_tag_survives_very_long_paths() {
     };
     for (size, i_pressed) in [((110, 20), false), ((80, 12), false), ((110, 20), true)] {
         let mut s = shell_with(&t, i_pressed, false, size);
-        let header = screen(&mut s, size).lines().next().unwrap().to_string();
-        let tag = if i_pressed {
-            "identical shown"
-        } else {
-            "identical hidden"
-        };
-        assert!(header.contains(tag), "{header}");
+        let full = screen(&mut s, size);
+        let mut lines = full.lines();
+        let header = lines.next().unwrap();
+        assert!(header.ends_with("right"), "{header}");
         assert!(header.chars().count() <= size.0 as usize);
+        let chip = if i_pressed {
+            "i [x] identical"
+        } else {
+            "i [ ] identical"
+        };
+        let bar = lines.next().unwrap();
+        assert!(bar.contains(chip) && bar.contains(". [x] hidden"), "{bar}");
     }
+}
+
+/// The listed files, in order.
+fn listed(s: &Shell) -> Vec<String> {
+    s.dir
+        .rows
+        .iter()
+        .filter_map(|r| match r.node {
+            Node::File(e) => Some(s.dir.entries[e].rel.display().to_string()),
+            Node::Dir { .. } => None,
+        })
+        .collect()
+}
+
+#[test]
+fn m_b_and_dot_hide_missing_binary_and_hidden_files() {
+    let t = tree();
+    write(&t.left, ".github/ci.yml", b"a\n");
+    write(&t.right, ".github/ci.yml", b"b\n");
+    write(&t.right, ".env", b"x\n");
+    write(&t.right, "assets/new.bin", &[0, 1, 2]);
+    let mut s = shell(&t);
+    let all = listed(&s);
+    for rel in [
+        ".env",
+        ".github/ci.yml",
+        "assets/new.bin",
+        "docs/old-flow.md",
+    ] {
+        assert!(all.contains(&rel.to_string()), "{rel} is listed by default");
+    }
+
+    key(&mut s, 'm');
+    assert!(!s.dir.filters.missing);
+    let shown = listed(&s);
+    for rel in [
+        ".env",
+        "assets/new.bin",
+        "docs/old-flow.md",
+        "src/auth/refresh.rs",
+    ] {
+        assert!(
+            !shown.contains(&rel.to_string()),
+            "{rel} is on one side only"
+        );
+    }
+    assert!(shown.contains(&".github/ci.yml".to_string()));
+    key(&mut s, 'm');
+    assert_eq!(listed(&s), all);
+
+    key(&mut s, 'b');
+    let shown = listed(&s);
+    assert!(!shown.contains(&"assets/logo.png".to_string()));
+    assert!(
+        !shown.contains(&"assets/new.bin".to_string()),
+        "one-sided binaries too"
+    );
+    key(&mut s, 'b');
+
+    key(&mut s, '.');
+    let shown = listed(&s);
+    assert!(!shown.iter().any(|r| r.starts_with('.')), "{shown:?}");
+    assert_eq!(shown.len(), all.len() - 2);
+    insta::assert_snapshot!(body(&mut s));
+}
+
+#[test]
+fn hiding_binary_also_hides_identical_binaries_once_shown() {
+    let t = tree();
+    write(&t.left, "same.bin", &[0, 7, 7]);
+    write(&t.right, "same.bin", &[0, 7, 7]);
+    let mut s = shell(&t);
+    key(&mut s, 'i');
+    assert!(listed(&s).contains(&"same.bin".to_string()));
+    s.dir.toggle(Filter::Binary);
+    assert!(!listed(&s).contains(&"same.bin".to_string()));
+    assert!(listed(&s).contains(&"Cargo.toml".to_string()));
+}
+
+#[test]
+fn a_list_emptied_by_filters_says_so_and_counts_what_is_left_out() {
+    let t = tree();
+    let mut s = shell(&t);
+    for f in [Filter::Missing, Filter::Binary] {
+        s.dir.toggle(f);
+    }
+    let differ = listed(&s).len();
+    assert!(differ > 0);
+    let full = screen(&mut s, (110, 20));
+    let filtered = s.dir.entries.len() - differ;
+    assert!(
+        full.lines()
+            .last()
+            .unwrap()
+            .contains(&format!("{filtered} filtered out")),
+        "{full}"
+    );
+    let only = tempfile::tempdir().unwrap();
+    let (l, r) = (only.path().join("left"), only.path().join("right"));
+    write(&l, "gone.txt", b"x\n");
+    std::fs::create_dir_all(&r).unwrap();
+    let one = Tree {
+        _tmp: only,
+        left: l,
+        right: r,
+    };
+    let mut s = shell(&one);
+    s.dir.toggle(Filter::Missing);
+    let full = screen(&mut s, (110, 20));
+    assert!(full.contains("Every file is filtered out"), "{full}");
+}
+
+#[test]
+fn help_still_shows_how_to_quit_on_an_80x24_terminal() {
+    let t = tree();
+    let mut s = shell_with(&t, false, false, (80, 24));
+    s.on_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+    let full = screen(&mut s, (80, 24));
+    assert!(
+        full.contains("Ctrl-c") && full.contains("i m b ."),
+        "{full}"
+    );
 }

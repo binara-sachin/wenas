@@ -76,7 +76,9 @@ wenas <(git show HEAD~3:src/main.rs) src/main.rs   # pipes are read-only
 | `Ctrl-d` `Ctrl-u` | Half a page down or up |
 | `gg` `G` | Top or bottom |
 | `J` `K` (or `]c` `[c`) | Next or previous hunk |
-| `←` `→` (or `zh` `zl`) | Scroll both panes sideways |
+| `←` `→` | Scroll both panes sideways |
+| `z` | Fold long runs of unchanged lines, or show them again |
+| `]f` `[f` | Next or previous changed file (opened from a directory) |
 | `Tab` | Switch the focused pane |
 | `>` `<` | Copy the current hunk to the right or left |
 | `u` `Ctrl-r` | Undo or redo |
@@ -90,7 +92,7 @@ wenas <(git show HEAD~3:src/main.rs) src/main.rs   # pipes are read-only
 | `Esc` | Cancel a running scan or diff, clear the search |
 | `F1` | Help |
 
-In the directory view, files are listed as a tree: `j` `k` move, `Enter` opens a file or folds a folder, `h` `l` fold and unfold, `/` searches names, `q` quits. The filter bar shows or hides identical (`i`), missing on one side (`m`), binary (`b`) and hidden dot files (`.`).
+In the directory view, files are listed as a tree: `j` `k` move, `Enter` opens a file or folds a folder, `h` `l` fold and unfold, `]f` `[f` jump between changed files, `/` searches names, `q` quits. The toolbar shows or hides identical (`i`), one side only (`m`), binary (`b`) and hidden dot files (`.`). A file opened from the list has a `‹ files` back control (`Backspace`).
 
 Pasted text never runs as keys: it goes into the `/` search prompt, and is ignored everywhere else, so a stray paste can't copy, save or quit.
 

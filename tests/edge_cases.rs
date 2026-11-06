@@ -157,8 +157,8 @@ fn utf16_is_treated_as_binary_with_a_note() {
 fn wide_characters_are_cut_cleanly_at_the_pane_edge() {
     // Narrow panes: left text area is 9 columns; the fifth wide glyph would
     // straddle the edge and must be replaced, never drawn in half.
-    let mut a = app("ab日本語日本語\n".as_bytes(), b"x\n", (31, 6), wide_cfg());
-    let s = screen(&mut a, (31, 6));
+    let mut a = app("ab日本語日本語\n".as_bytes(), b"x\n", (35, 6), wide_cfg());
+    let s = screen(&mut a, (35, 6));
     let squeezed: String = s.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(squeezed.contains("ab日本語›"), "{s}");
     assert!(!squeezed.contains("ab日本語日"), "{s}");
@@ -197,9 +197,13 @@ fn tabs_are_four_columns_by_default_and_configurable() {
 fn crlf_versus_lf_is_ignored_but_flagged() {
     let mut a = app(b"a\r\nb\r\nX\n", b"a\nb\nY\n", (100, 8), wide_cfg());
     assert_eq!(a.session.hunks.len(), 1, "only the real change shows");
+    // Each pane's header names its line endings.
     let s = screen(&mut a, (100, 8));
-    let status = s.lines().rev().find(|l| !l.is_empty()).unwrap();
-    assert!(status.contains("mixed | LF"), "{status}");
+    let headers = s.lines().nth(3).unwrap();
+    assert!(
+        headers.contains("mixed") && headers.contains("LF"),
+        "{headers}"
+    );
     let d = tempfile::tempdir().unwrap();
     let (l, r) = (d.path().join("l"), d.path().join("r"));
     std::fs::write(&l, "a\r\nb\r\n").unwrap();
@@ -212,13 +216,11 @@ fn crlf_versus_lf_is_ignored_but_flagged() {
         .stdout("identical\n");
     // The two sides are flagged when they differ.
     let mut a = app(b"a\r\nz\r\n", b"a\nq\n", (100, 8), wide_cfg());
-    let status = screen(&mut a, (100, 8))
-        .lines()
-        .rev()
-        .find(|l| !l.is_empty())
-        .unwrap()
-        .to_string();
-    assert!(status.contains("CRLF | LF"), "{status}");
+    let headers = screen(&mut a, (100, 8)).lines().nth(3).unwrap().to_string();
+    assert!(
+        headers.contains("CRLF") && headers.contains("LF"),
+        "{headers}"
+    );
 }
 
 #[test]

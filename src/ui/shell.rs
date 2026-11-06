@@ -3,7 +3,8 @@
 //! Opened files keep their state (edits, undo history) when you go back to the
 //! list, so a whole directory can be worked through and saved together.
 
-use super::app::{App, BinaryInfo, ModalText, Outcome, ViewConfig};
+use super::app::{App, BinaryInfo, ModalText, Outcome, Place, ViewConfig};
+use super::chrome::Roots;
 use super::dir::{DirAction, DirView, draw_dir};
 use super::render;
 use super::term::Ui;
@@ -62,6 +63,11 @@ impl Shell {
             outcome: None,
             size,
         }
+    }
+
+    /// Change the colours, for files opened from now on and the list.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.opts.theme = theme;
     }
 
     fn rel_label(&self, idx: usize) -> String {
@@ -214,6 +220,45 @@ impl Shell {
             }
         }
         self.current = Some(idx);
+        self.update_place();
+    }
+
+    /// Tell the open file where it sits in the list, for its title bar. The
+    /// list can grow while the scan runs, so this is redone on every draw.
+    fn update_place(&mut self) {
+        let Some(idx) = self.current else { return };
+        let (index, total) = self.dir.file_position(idx).unwrap_or((0, 0));
+        let roots = Roots::new(
+            &self.dir.left.display().to_string(),
+            &self.dir.right.display().to_string(),
+        );
+        let rel = self.rel_label(idx);
+        if let Some(app) = self.open.get_mut(&idx) {
+            app.place = Some(Place {
+                roots,
+                rel,
+                index,
+                total: total.max(index + 1),
+            });
+        }
+    }
+
+    /// `]f` / `[f` in a file: open the next or previous changed file in the
+    /// list, without going back to it first.
+    fn step_file(&mut self, idx: usize, forward: bool) {
+        let Some(next) = self.dir.change_after(idx, forward) else {
+            if let Some(app) = self.open.get_mut(&idx) {
+                app.message = Some(if forward {
+                    "this is the last changed file".into()
+                } else {
+                    "this is the first changed file".into()
+                });
+            }
+            return;
+        };
+        self.close_current();
+        self.dir.select_entry(next);
+        self.open_entry(next);
     }
 
     /// Back to the list, reflecting what happened to the file.
@@ -326,6 +371,10 @@ impl Shell {
                 }
                 self.close_current();
             }
+            Outcome::NextFile | Outcome::PrevFile => {
+                self.saving_and_quitting = false;
+                self.step_file(idx, o == Outcome::NextFile);
+            }
             Outcome::QuitAsk if was_saving => self.continue_save_and_quit(),
             Outcome::QuitAsk => {
                 self.saving_and_quitting = false;
@@ -352,6 +401,9 @@ impl Ui for Shell {
     fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
         self.size = (area.width, area.height);
+        if self.current.is_some() {
+            self.update_place();
+        }
         if let Some(app) = self.current.and_then(|i| self.open.get_mut(&i)) {
             render::draw(f, app);
             return;
@@ -426,8 +478,12 @@ impl Ui for Shell {
         if self.large_pending.is_some() || self.quit_modal {
             return false;
         }
-        if let Some(app) = self.current.and_then(|i| self.open.get_mut(&i)) {
-            return app.on_mouse(event);
+        if let Some(idx) = self.current {
+            let was_saving = self.saving_and_quitting;
+            let acted = self.open.get_mut(&idx).is_some_and(|a| a.on_mouse(event));
+            // A click can go back to the list (the back control).
+            self.handle_app_outcome(idx, was_saving);
+            return acted;
         }
         match self.dir.on_mouse(event, Instant::now()) {
             Some(DirAction::Open(i)) => {

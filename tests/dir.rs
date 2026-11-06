@@ -146,7 +146,7 @@ fn list_shows_differences_and_hides_identical() {
             .lines()
             .nth(1)
             .unwrap()
-            .contains("i [ ] identical")
+            .contains("i ○ identical")
     );
 }
 
@@ -167,7 +167,7 @@ fn i_toggles_identical_files_and_keeps_the_selection() {
             .lines()
             .nth(1)
             .unwrap()
-            .contains("i [x] identical")
+            .contains("i ● identical")
     );
     key(&mut s, 'i');
     assert_eq!(
@@ -181,13 +181,15 @@ fn counts_in_the_status_line() {
     let t = tree();
     let mut s = shell(&t);
     let screen = screen(&mut s, (110, 20));
+    // The count of what's shown sits on the right of the toolbar.
+    let toolbar = screen.lines().nth(1).unwrap();
+    assert!(
+        toolbar.ends_with("6 of 9 files  ·  3 identical hidden"),
+        "{toolbar}"
+    );
     let last = screen.lines().rev().find(|l| !l.is_empty()).unwrap();
     assert!(
-        last.contains("9 files") && last.contains("6 differ") && last.contains("3 identical"),
-        "{last}"
-    );
-    assert!(
-        last.contains("Enter open") && last.contains("i show identical") && last.contains("q quit"),
+        last.contains("Enter open") && last.contains("]f [f") && last.ends_with("q quit"),
         "{last}"
     );
 }
@@ -249,7 +251,7 @@ fn folders_fold_and_unfold() {
     assert_eq!(s.current, None, "Enter on a folder doesn't open anything");
     assert_eq!(s.dir.visible.len(), rows - 3);
     assert_eq!(s.dir.cursor, auth);
-    assert!(screen(&mut s, (110, 20)).contains("folded, 3 files"));
+    assert!(screen(&mut s, (110, 20)).contains("▸ auth/"));
     assert!(s.dir.position_of(Path::new("src/auth/token.rs")).is_none());
     key(&mut s, 'l');
     assert_eq!(s.dir.visible.len(), rows);
@@ -282,7 +284,7 @@ fn search_unfolds_the_folder_holding_a_match() {
 }
 
 #[test]
-fn branches_follow_entries_that_stream_in_later() {
+fn folders_follow_entries_that_stream_in_later() {
     let t = tree();
     let scan = Scan::spawn(t.left.clone(), t.right.clone(), vec![]);
     let mut dir = DirView::new(
@@ -310,14 +312,28 @@ fn branches_follow_entries_that_stream_in_later() {
         diff: wenas::ops::DiffPolicy::default(),
     };
     let mut s = Shell::new(dir, opts, (110, 20));
-    assert!(screen(&mut s, (110, 20)).contains("    └── a.rs"));
+    assert!(screen(&mut s, (110, 20)).contains(" M      a.rs"));
     s.dir.apply(entry("src/b.rs"));
     s.dir.apply(entry("z.rs"));
     let v = screen(&mut s, (110, 20));
-    for line in ["├── src/", "│   ├── a.rs", "│   └── b.rs", "└── z.rs"]
-    {
+    for line in ["    ▾ src/", " M      a.rs", " M      b.rs", " M    z.rs"] {
         assert!(v.contains(line), "{line}\n{v}");
     }
+    // A folder with one child shares its row; a second child gives it its own.
+    s.dir.apply(entry("src/deep/er/c.rs"));
+    let v = screen(&mut s, (110, 20));
+    assert!(v.contains(" M      deep/er/c.rs"), "{v}");
+    s.dir.cursor = s.dir.position_of(Path::new("src/deep/er/c.rs")).unwrap();
+    s.dir.apply(entry("src/deep/d.rs"));
+    let v = screen(&mut s, (110, 20));
+    for line in ["      ▾ deep/", " M        er/c.rs", " M        d.rs"] {
+        assert!(v.contains(line), "{line}\n{v}");
+    }
+    assert_eq!(
+        s.dir.entries[s.dir.selected().unwrap()].rel,
+        Path::new("src/deep/er/c.rs"),
+        "the selection stays put when its folder splits"
+    );
 }
 
 #[test]
@@ -612,8 +628,9 @@ fn scanning_state_is_shown_while_results_stream_in() {
     let mut s = Shell::new(dir, opts, (110, 20));
     assert!(s.polling());
     let v = screen(&mut s, (110, 20));
+    let toolbar = v.lines().nth(1).unwrap();
     assert!(
-        v.contains("scanning") && v.contains("1,204 files") && v.contains("1 differ so far"),
+        toolbar.contains("scanning") && toolbar.contains("1,204 files"),
         "{v}"
     );
     assert!(v.contains("Esc stop scan"));
@@ -783,11 +800,11 @@ fn unreadable_entries_show_a_bang_and_the_reason() {
     let mut s = shell(&t);
     let v = body(&mut s);
     assert!(
-        v.contains("!  │   └── server.pem") && v.contains("broken symlink"),
+        v.contains(" !      server.pem") && v.contains("broken symlink"),
         "{v}"
     );
     assert!(
-        v.contains("M  └── ok.txt"),
+        v.contains(" M    ok.txt"),
         "the walk continued past the error:\n{v}"
     );
     open(&mut s, "fixtures/server.pem");
@@ -813,15 +830,21 @@ fn the_filter_bar_survives_very_long_paths() {
         let full = screen(&mut s, size);
         let mut lines = full.lines();
         let header = lines.next().unwrap();
-        assert!(header.ends_with("right"), "{header}");
+        // Only what tells the roots apart is shown, so their length doesn't matter.
+        if size.0 >= 100 {
+            assert!(header.contains("left ↔ right"), "{header}");
+        }
         assert!(header.chars().count() <= size.0 as usize);
         let chip = if i_pressed {
-            "i [x] identical"
+            "i ● identical"
         } else {
-            "i [ ] identical"
+            "i ○ identical"
         };
         let bar = lines.next().unwrap();
-        assert!(bar.contains(chip) && bar.contains(". [x] hidden"), "{bar}");
+        assert!(bar.contains(chip), "{bar}");
+        if size.0 >= 100 {
+            assert!(bar.contains(". ● hidden"), "{bar}");
+        }
     }
 }
 
@@ -915,7 +938,7 @@ fn a_list_emptied_by_filters_says_so_and_counts_what_is_left_out() {
     let filtered = s.dir.entries.len() - differ;
     assert!(
         full.lines()
-            .last()
+            .nth(1)
             .unwrap()
             .contains(&format!("{filtered} filtered out")),
         "{full}"
@@ -945,4 +968,53 @@ fn help_still_shows_how_to_quit_on_an_80x24_terminal() {
         full.contains("Ctrl-c") && full.contains("i m b ."),
         "{full}"
     );
+}
+
+#[test]
+fn f_keys_walk_the_changed_files_in_the_list_and_from_a_file() {
+    let t = tree();
+    let mut s = shell_with(&t, true, false, (110, 20));
+    let sel = |s: &Shell| s.dir.entries[s.dir.selected().unwrap()].rel.clone();
+    select(&mut s, "Cargo.toml");
+    key(&mut s, ']');
+    key(&mut s, 'f');
+    assert_eq!(
+        sel(&s),
+        Path::new("assets/logo.png"),
+        "identical files are skipped"
+    );
+    key(&mut s, '[');
+    key(&mut s, 'f');
+    assert_eq!(s.dir.message.as_deref(), Some("no more changes above"));
+    // From an open file: the next changed file opens in its place.
+    open(&mut s, "src/auth/session.rs");
+    let title = screen(&mut s, (110, 20));
+    assert!(
+        title.lines().next().unwrap().starts_with(" ‹ files"),
+        "{title}"
+    );
+    key(&mut s, ']');
+    key(&mut s, 'f');
+    let cur = s.current.unwrap();
+    assert_eq!(s.dir.entries[cur].rel, Path::new("src/auth/token.rs"));
+    assert_eq!(sel(&s), Path::new("src/auth/token.rs"), "the list follows");
+    key(&mut s, ']');
+    key(&mut s, 'f');
+    assert_eq!(s.current, Some(cur), "token.rs is the last change");
+    assert_eq!(
+        s.open[&cur].message.as_deref(),
+        Some("this is the last changed file")
+    );
+}
+
+#[test]
+fn a_folded_chain_of_folders_keeps_its_own_row() {
+    let t = tree();
+    let mut s = shell(&t);
+    // docs/ holds one listed file, but top-level folders always get a row.
+    assert!(body(&mut s).contains("    ▾ docs/"));
+    select(&mut s, "src/auth/token.rs");
+    key(&mut s, 'h');
+    key(&mut s, 'h');
+    assert!(body(&mut s).contains("▸ auth/"));
 }

@@ -170,26 +170,38 @@ Every added crate should be justified against binary size and build time.
 
 ## 6. User interface
 
+Every screen has four zones, always in this order, so nothing shifts between views (D48):
+
+1. **Title bar** (row 0, `title_bg`, the brightest surface): where you are. The back control (a file opened from the list), the two sides with only their difference in colour (`wso2is-5.11.0.396 ↔ 445`: the left side always red, the right green), then the path cut from the middle so the file name stays, and the position in the list on the right.
+2. **Toolbar** (row 1, `panel_bg`): how you're looking. Every setting that changes what the content shows, each as key, label, value, and on the right a count of what is shown.
+3. **Content**: a blank row, then what you're working on on the base background. Pane headers belong here and stay dim.
+4. **Status bar** (last row, `panel_bg`): on the left the cursor's state in words (`hunk 1 of 4`, `after the last hunk`), replaced by messages until the next key, with errors on the red surface; on the right at most six key hints for actions that work here, with `F1 help` last. Hints that don't apply right now are dimmed, not hidden. Questions rise from here under an amber rule.
+
+Narrow terminals: 140 columns and up get full labels; 100 to 139 short labels (`ws off`) and bare folder counts; under 100 the toolbar shows key and value only and the title bar drops the roots (the toolbar's right side shows them instead); under 60 the status hints shrink to `F1 help`.
+
 ### 6.1 File view, side-by-side
 
 ```
- a/src/auth/token.rs  [read-only]       │   │ src/auth/token.rs  [+]
-────────────────────────────────────────┼───┼────────────────────────────────────────
- 40  fn refresh(&self) -> Result {      │   │ 40  fn refresh(&self) -> Result {
- 41      let ttl = self.ttl;            │ ~ │ 41      let ttl = self.ttl.max(60);
- ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │ + │ 42      log::debug!("ttl={ttl}");
- 42      self.fetch(ttl)?;              │   │ 43      self.fetch(ttl)?;
- 43      self.cache.clear();            │→- │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
- 44      Ok(())                         │   │ 44      Ok(())
- 45  }                                  │   │ 45  }
- hunk 3/7 · ws: off · LF │ LF · F1 help
+ ‹ files ⌫   wso2is-5.11.0.396 ↔ 445   › api#identity#auth#v1.1/…/pom.xml      [f  14 of 92  ]f
+ v view split     W whitespace off     z unchanged lines folded     / find   1 hunk · 1 changed line
+
+ wso2is-5.11.0.396  LF                              wso2is-5.11.0.445  LF
+    ┄┄┄┄┄  lines 1 to 17 unchanged  ┄┄┄┄┄                                         z to unfold
+   18      <parent>                                    18      <parent>
+   20          <groupId>org.wso2…</groupId>            20          <groupId>org.wso2…</groupId>
+   21          <version>2.4.2.3</version>        ←~→   21          <version>2.4.2.8</version>
+   22          <relativePath>../../pom.xml</…          22          <relativePath>../../pom.xml</…
+    ┄┄┄┄┄  line 25 to end of file unchanged  ┄┄┄┄┄                                z to unfold
+
+ hunk 1 of 1   line 21               > copy right   < copy left   u undo   w save   e edit   F1 help
 ```
 
 - **Panes** are row-locked. The shorter side of a hunk gets filler rows (`░`), so matching lines always sit on the same screen row.
 - **Gutter** (3 columns): `~` changed, `+` added on the right, `-` removed from the left. On the current hunk, arrows show the copy direction: `→` (`>`) and `←` (`<`).
-- **Colours** (not visible above): changed lines get a subtle background tint; the changed words within them get a stronger tint.
-- **Headers** show the label (or path), `[read-only]`, and `[+]` when there are unsaved changes.
-- **Status line** shows the current hunk, the whitespace mode, each side's line endings (flagged when they differ), and the help key.
+- **Colours**: changed lines get a subtle background tint; the changed words within them a stronger one. Changes under three characters get bold text and a stronger tint still.
+- **Pane headers** show the side's name (the root's name when opened from a directory, else the label or path), `read-only`, the line endings (amber when the sides differ) and `[+]` when there are unsaved changes. The focused pane's header is lit; only the focused pane shows the cursor (its line number in amber).
+- **Folding** (`z`): long runs of unchanged lines collapse into one row giving the range, keeping three lines around each hunk. Off by default. A search whose match is folded unfolds.
+- **Overview**: unfolded, and when the file is longer than the screen, a one-column ruler at the right edge marks the hunks (in their colour) and what is on screen. Its two columns are kept free when folded too.
 - **Long lines** are cut off at the pane edge with `›`. `←`/`→` scroll both panes sideways together. No wrapping.
 
 ### 6.2 File view, unified
@@ -197,48 +209,47 @@ Every added crate should be justified against binary size and build time.
 Used when you press `v`, or automatically when the terminal is narrower than 100 columns (configurable).
 
 ```
- a/src/auth/token.rs ↔ src/auth/token.rs  [+]
-──────────────────────────────────────────────────────────
- 40 40      fn refresh(&self) -> Result {
- 41    -         let ttl = self.ttl;
-    41 +         let ttl = self.ttl.max(60);
-    42 +         log::debug!("ttl={ttl}");
- 42 43          self.fetch(ttl)?;
- 43    -         self.cache.clear();
- hunk 3/7 · ws: off · F1 help
+ ‹ files  api#identity#auth#v1.1/…/pom.xml                     14 of 92
+ v unified   W ws off   z all lines                           396 ↔ 445
+
+   20  20          <groupId>org.wso2.carbon…</groupId>                 │
+   21      -→          <version>2.4.2.3</version>                      ▬
+       21  +→          <version>2.4.2.8</version>                      ┃
+   22  22          <relativePath>../../pom.xml</relativePath>          ┃
+ hunk 1 of 1   line 21                > < copy   u undo   F1 help
 ```
 
-All hunk actions work the same way in both views.
+All hunk actions work the same way in both views. There are no pane headers; when the line endings differ, the toolbar says so (`CRLF ↔ LF`).
 
 ### 6.3 Directory view
 
 ```
- left: /tmp/git-difftool.Xa12/left   right: ~/code/app
- show  i [ ] identical   m [x] missing   b [x] binary   . [x] hidden
-     ├── assets/
- B   │   └── logo.png               binary · differs at byte 2,048
- T   ├── config                     file vs directory
-     ├── docs/
- L   │   └── old-flow.md            only on left
-     └── src/
-         └── auth/
- R           ├── refresh.rs         only on right
- M           ├── session.rs
- M           └── token.rs
-──────────────────────────────────────────────────────────────────────────────
- 6 differ · scanning… 1,204 files · i: show identical · Enter: open
+ wenas    wso2is-5.11.0.396 ↔ wso2is-5.11.0.445   /repository/deployment/server/webapps   23 of 92
+ show  i ○ identical    m ● one side only    b ○ binary    . ○ hidden files      / find   92 of 4,879 files  ·  4,787 identical hidden
+
+    ▾ accountrecoveryendpoint/                                                          8 changed
+      ▾ META-INF/maven/org.wso2.identity.apps/recovery-portal/                          2 changed
+ M          pom.properties
+ M        password-recovery.jsp
+    ▾ api#identity#auth#v1.1/                                                           3 changed
+ M        WEB-INF/web.xml
+ R        Resources_pt_BR.properties                                                only on right
+ B        images/logo.png                                              binary, differs at byte 2,048
+ authenticationendpoint/WEB-INF/…/i18n/Resources_fr_FR.properties   modified    Enter open   h l fold folder   ]f [f next, previous change   F1 help   q quit
 ```
 
-- Results appear as the walk finds them, as a tree in the walk's name order (like `tree`). Folders appear only to hold listed files, so with identical files hidden a folder with no differences is not shown.
-- `Enter` (or `h` / `l`) folds and unfolds a folder; a folded folder shows how many files it holds. Folding survives `i`.
-- The filter bar under the header shows or hides four kinds of file, each with a key and a chip that a click flips:
+- Results appear as the walk finds them, as a tree in the walk's name order, indented two columns a level with `▾` (open) or `▸` (folded) before a folder. Folders appear only to hold listed files, so with identical files hidden a folder with no differences is not shown. Folder rows show how many changed files they hold.
+- Below the top level, a folder with one child shares that child's row, so a chain of such folders reads as one path (`META-INF/maven/…/`, `WEB-INF/web.xml`). This is decided when the list is drawn, so a sibling that streams in later gives the folder its own row again.
+- `Enter` (or `h` / `l`) folds and unfolds a folder. Folding survives `i`. Moving keeps three rows of context above and below the selection.
+- The toolbar shows or hides four kinds of file, each with a key and a chip (`●` shown, `○` hidden) that a click flips:
   - `i` identical files (hidden by default);
-  - `m` missing files: those on one side only, either side;
+  - `m` files on one side only, either side;
   - `b` binary files: differing, identical or one-sided;
   - `.` hidden files: any path with a part starting with `.`, so everything under `.github/` too.
 
-  A file is listed only when every kind it belongs to is shown (a binary file on the left only goes with either `m` or `b`). The status bar counts the files left out. Toggling keeps the selection and folding, and clears the search. The `[directory]` config sets the starting state (§11.2).
-- `Enter` opens the selected file in the file view; `Backspace` returns to the list, keeping the selection.
+  A file is listed only when every kind it belongs to is shown (a binary file on the left only goes with either `m` or `b`). The toolbar's right side counts the files listed and those left out, or the scan's progress while it runs. Toggling keeps the selection and folding, and clears the search. The `[directory]` config sets the starting state (§11.2).
+- The title bar's right side gives the selection's place among the listed files. The status bar names the selected file (path cut from the middle) and its state.
+- `Enter` opens the selected file in the file view; `Backspace` or the `‹ files` back control returns to the list, keeping the selection. `]f` / `[f` step through the changed files, in the list or from inside a file without going back.
 - A one-sided file opens against an empty pane on the other side, so its hunk can be copied across.
 
 ### 6.4 Binary file screen
@@ -267,7 +278,9 @@ All hunk actions work the same way in both views.
 | `Ctrl-d` / `Ctrl-u` | Half a page down / up |
 | `gg` / `G` | Top / bottom |
 | `J` / `K` (also `]c` / `[c`) | Next / previous hunk, centred on screen |
-| `←` / `→` (also `zh` / `zl`) | Scroll both panes sideways |
+| `←` / `→` | Scroll both panes sideways |
+| `z` | Fold long runs of unchanged lines, or show them again |
+| `]f` / `[f` | Next / previous changed file (opened from a directory) |
 | `Tab` | Switch focus to the other pane |
 | `>` | Copy the current hunk left → right |
 | `<` | Copy the current hunk right → left |
@@ -293,6 +306,7 @@ All hunk actions work the same way in both views.
 | `gg` / `G` | First / last entry |
 | `h` / `l`, `←` / `→` | Fold a folder, or go up to the one holding the selection / unfold a folder, or step into it |
 | `Enter` | Open the selected file, or fold / unfold the selected folder |
+| `]f` / `[f` | Select the next / previous changed file |
 | `i` | Show / hide identical files |
 | `m` | Show / hide files on one side only |
 | `b` | Show / hide binary files |
@@ -333,6 +347,8 @@ A shortcut layer: every action has a key, and `mouse = false` turns it off.
 | Left press on a row | Move the cursor there and focus that pane | Select the entry |
 | Second press within 400 ms | As above | Open the file, or fold / unfold the folder |
 | Left press on a filter chip | | Show / hide that kind of file |
+| Left press on a toolbar control | Same as its key (`v`, `W`, `z`, `/`) | |
+| Left press on `‹ files` | Back to the list | |
 | Left press and release on a gutter `←` or `→` | Copy the current hunk | |
 
 - **Keeping the cursor on screen** is what makes a copy safe: `>` and `<` act on the hunk at the cursor (§7.3), so it must never be out of sight. Scrolling can change the current hunk, and the gutter shows which one it is.
@@ -483,7 +499,7 @@ show_binary = true
 show_hidden = true    # names starting with `.`
 ```
 
-Colour names accepted under `[colors]`, each as `#rrggbb`: `panel_bg`, `dim`, `muted`, `bright`, `amber`, `on_amber`, `cursor_bg`, `changed_bg`, `changed_word_bg`, `added_bg`, `added_word_bg`, `removed_bg`, `removed_word_bg`, `filler`, `added_fg`, `removed_fg`, `changed_fg`, `match_bg`, `match_fg`. Unknown names and malformed values warn and are ignored; overrides are ignored under `NO_COLOR` and follow the terminal's colour depth.
+Colour names accepted under `[colors]`, each as `#rrggbb`: `title_bg`, `panel_bg`, `back_bg`, `select_bg`, `fold_bg`, `off`, `dim`, `muted`, `bright`, `amber`, `on_amber`, `cursor_bg`, `changed_bg`, `changed_word_bg`, `changed_short_bg`, `added_bg`, `added_word_bg`, `removed_bg`, `removed_word_bg`, `filler`, `added_fg`, `removed_fg`, `changed_fg`, `match_bg`, `match_fg`. Unknown names and malformed values warn and are ignored; overrides are ignored under `NO_COLOR` and follow the terminal's colour depth.
 
 Key remapping is planned for a later version.
 
@@ -578,3 +594,4 @@ CI runs on macOS and Linux.
 | D45 | The theme query waits for the terminal's reply with `select`, not `poll`. On macOS `poll` reports `POLLNVAL` for a terminal device straight away, so the `read` after it blocked: with a terminal that never answered, wenas stalled before drawing until a key came and then swallowed that key. Now a silent terminal costs only the 150 ms timeout, as S2 intended. |
 | D46 | The directory list is a tree (§6.3), drawn with `tree`'s `├──` / `└──` / `│` lines. The walk already emits entries in preorder (D31), so the tree is built as results stream in, with no buffering: each entry reuses the folders it shares with the previous one. Whether a row is the last of its siblings is tracked per parent and the lines are drawn from it at draw time, so a sibling that arrives later turns an earlier `└──` into `├──`. Folders are rows the cursor can stop on; `Enter`, `h` / `l` and a double-click fold them, and folding is kept by path so `i` and returning from a file keep it. Search still matches full file paths and unfolds what hides a match. A deep tree gives up its leading branch lines (marked `…`) before the name. |
 | D47 | The directory list has four filters (§6.3): identical, missing (one side only), binary and hidden (dot) files, each a key and a clickable chip in a bar on the row between the header and the list, which was blank, so the list loses no rows. They replace the header's `[identical hidden]` tag. A file is listed only if every kind it belongs to is shown. The binary flag is kept on the entry apart from its status, so it is known for identical files (`compare_files` already sniffs both starts) and one-sided files (sniffed on the pool, 8 KB each, so a large one-sided tree doesn't hold up the walk), and it survives a save that makes a file identical. Hidden means a path part starting with `.`, not the macOS hidden flag, which would cost a `stat` per entry. Chips are placed by a function of the width shared by drawing and clicking, so a click always hits what is drawn; chips that don't fit are left out. Filtering stays in the list: the file view compares one pair and has nothing to filter. |
+| D48 | The UI follows the four-zone design (§6): title bar, toolbar, content, status bar, each always on its own row, separated by surfaces (`title_bg` › `panel_bg` › content) rather than rules. The header's two full paths became a title that shows only what tells the sides apart (`Roots`: the last differing path part of each, their shared start once, and the shared tail), because temp-dir roots carry no information. Settings moved from the status bar to the toolbar as key, label, value; the status bar's left reads the cursor's state in words instead of `1/4`. One layout source (`chrome`: `BODY_Y`, `CHROME_ROWS`, the width tiers, `toolbar_items`, `chip_spans`) serves drawing and clicking. The tree dropped `tree`'s lines (D46) for indentation and `▾`/`▸`, and merges single-child folder chains; whether a folder merges depends on later siblings, so `visible` is recomputed once per batch of scan results rather than appended to. `z` folds unchanged runs (`App::folds`, keyed by row, each keeping the run's first line so anchors survive the toggle); it takes `z` from the old `zh`/`zl` aliases, which `←`/`→` cover. `]f`/`[f` and the back control are new outcomes the shell acts on, including when they come from a click. |

@@ -2,23 +2,23 @@
 source: tests/ui.rs
 expression: text(&mut a)
 ---
- a/src/auth/token.rs read-only  ↔  src/auth/token.rs
+ auth/token.rs
+ v unified   W ws off   z all lines                                 a/src ↔ src
 
-  1  1     impl Token {
-  2  2         pub fn is_expired(&self) -> bool {
-▎ 3     -→         self.issued + self.ttl < now()
-     3  +→         self.issued + self.ttl <= now()
-  4  4         }
-  5  5
-  6     -      /// Refresh the token if it has expired.
-     6  +      /// Refresh the token before it expires.
-  7  7         fn refresh(&self) -> Result {
-  8     -          let ttl = self.ttl;
-     8  +          let ttl = self.ttl.max(60);
-     9  +          log::debug!("ttl={ttl}");
-  9 10             self.fetch(ttl)?;
- 10     -          self.cache.clear();
- 11 11             Ok(())
- 12 12         }
- 13 13     }
- 1/4   whitespace off  LF | LF                 > copy to right  u undo  F1 help
+   1   1     impl Token {                                                      ┃
+   2   2         pub fn is_expired(&self) -> bool {                            ▬
+   3      -→         self.issued + self.ttl < now()                            ▬
+       3  +→         self.issued + self.ttl <= now()                           ┃
+   4   4         }                                                             ┃
+   5   5                                                                       ▬
+   6      -      /// Refresh the token if it has expired.                      ▬
+       6  +      /// Refresh the token before it expires.                      ┃
+   7   7         fn refresh(&self) -> Result {                                 ▬
+   8      -          let ttl = self.ttl;                                       ▬
+       8  +          let ttl = self.ttl.max(60);                               ▬
+       9  +          log::debug!("ttl={ttl}");                                 ┃
+   9  10             self.fetch(ttl)?;                                         ▬
+  10      -          self.cache.clear();                                       ┃
+  11  11             Ok(())                                                    ┃
+  12  12         }                                                             ┃
+ hunk 1 of 4   line 3             > < copy   u undo   w save   e edit   F1 help

@@ -7,6 +7,7 @@ use crate::inline::{Inline, inline_diff};
 use crate::input::EolStyle;
 use crate::ops::{Cancelled, Dir, EditLoc, OpError, SaveError, Session, Side};
 use crate::theme::Theme;
+use crate::ui::chrome::Roots;
 use crate::ui::render::{Hit, hit_test};
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -33,6 +34,9 @@ pub enum Outcome {
     /// The first diff finished with no differences, so there is nothing to show
     /// (file mode prints `identical`).
     Identical,
+    /// Directory mode: `]f` / `[f`, go to the next or previous changed file.
+    NextFile,
+    PrevFile,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +56,27 @@ impl Default for ViewConfig {
         }
     }
 }
+
+/// Where a file opened from the directory list sits, for its title bar.
+#[derive(Debug, Clone)]
+pub struct Place {
+    pub roots: Roots,
+    /// The file's path under both roots.
+    pub rel: String,
+    /// Its position among the listed files, from 0.
+    pub index: usize,
+    pub total: usize,
+}
+
+/// A run of unchanged lines folded into one row (`z`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fold {
+    pub left: Range<usize>,
+    pub right: Range<usize>,
+}
+
+/// Unchanged lines kept on each side of a hunk when folding.
+pub const FOLD_CONTEXT: usize = 3;
 
 /// Shown instead of a diff when either side is binary (spec §6.4).
 #[derive(Debug, Clone)]
@@ -133,6 +158,12 @@ pub struct App {
     pub binary: Option<BinaryInfo>,
     /// Opened from the directory view: `Backspace` goes back, `q` defers to the shell.
     pub in_directory: bool,
+    /// Set by the directory view for the title bar.
+    pub place: Option<Place>,
+    /// Long runs of unchanged lines are folded (`z`).
+    pub fold: bool,
+    /// The folded rows, by row index.
+    pub folds: HashMap<usize, Fold>,
     /// The first diff was cancelled, so this session has nothing usable in it.
     pub diff_cancelled: bool,
     after_diff: Option<AfterDiff>,
@@ -172,6 +203,9 @@ impl App {
             cfg,
             binary: None,
             in_directory: false,
+            place: None,
+            fold: false,
+            folds: HashMap::new(),
             diff_cancelled: false,
             after_diff: None,
             width: size.0,
@@ -298,9 +332,12 @@ impl App {
         app
     }
 
-    /// Rows available for file content: header, spacer and status line are fixed.
+    /// Rows available for file content: the title bar, toolbar, blank row,
+    /// pane headers (side by side) and status bar are fixed.
     pub fn content_height(&self) -> usize {
-        (self.height as usize).saturating_sub(3).max(1)
+        (self.height as usize)
+            .saturating_sub(crate::ui::render::content_y(self) as usize + 1)
+            .max(1)
     }
 
     fn effective_view(&self) -> View {
@@ -338,20 +375,22 @@ impl App {
             self.session.left.len(),
             self.session.right.len(),
         );
-        self.rows = match self.view {
+        let rows = match self.view {
             View::SideBySide => align::side_by_side(hunks, ll, rl),
             View::Unified => align::unified(hunks, ll, rl),
+        };
+        (self.rows, self.folds) = if self.fold {
+            fold_rows(rows)
+        } else {
+            (rows, HashMap::new())
         };
         self.first_rows = align::hunk_first_rows(&self.rows, hunks.len());
         self.inline_cache.clear();
         self.eols = (self.session.left.style(), self.session.right.style());
-        if let Some((l, r)) = anchor {
-            let found = self.rows.iter().position(|row| {
-                (l.is_some() && row.left == l) || (l.is_none() && r.is_some() && row.right == r)
-            });
-            if let Some(i) = found {
-                self.cursor = i;
-            }
+        if let Some((l, r)) = anchor
+            && let Some(i) = self.row_of(l, r)
+        {
+            self.cursor = i;
         }
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.top = self.top.min(self.cursor);
@@ -360,6 +399,33 @@ impl App {
             let (q, back, cur_row) = (s.query.clone(), s.backward, self.cursor);
             self.run_search(q, back, cur_row, false);
         }
+    }
+
+    /// The row showing a line (by its left line, or its right one when it has
+    /// no left), including a fold that hides it.
+    fn row_of(&self, l: Option<usize>, r: Option<usize>) -> Option<usize> {
+        let found = self.rows.iter().position(|row| {
+            (l.is_some() && row.left == l) || (l.is_none() && r.is_some() && row.right == r)
+        });
+        found.or_else(|| {
+            self.folds
+                .iter()
+                .find(|(_, f)| match (l, r) {
+                    (Some(l), _) => f.left.contains(&l),
+                    (None, Some(r)) => f.right.contains(&r),
+                    _ => false,
+                })
+                .map(|(&i, _)| i)
+        })
+    }
+
+    /// `z`: fold long runs of unchanged lines, or show them again.
+    fn toggle_fold(&mut self) {
+        let anchor = self.anchor();
+        self.fold = !self.fold;
+        self.rebuild(anchor);
+        // The rows above the cursor changed completely; centre it again.
+        self.top = self.cursor.saturating_sub(self.content_height() / 2);
     }
 
     pub fn current_hunk(&self) -> Option<usize> {
@@ -400,6 +466,11 @@ impl App {
             ],
             View::Unified => [Self::unified_line(row), None],
         }
+    }
+
+    /// Is the row at this index a fold?
+    pub fn is_fold(&self, row: usize) -> bool {
+        self.folds.contains_key(&row)
     }
 
     // ---- movement ----
@@ -458,9 +529,9 @@ impl App {
 
     fn max_line_width(&self) -> usize {
         let end = (self.top + self.content_height()).min(self.rows.len());
-        self.rows[self.top.min(end)..end]
-            .iter()
-            .flat_map(|r| self.row_lines(r))
+        (self.top.min(end)..end)
+            .filter(|&i| !self.is_fold(i))
+            .flat_map(|i| self.row_lines(&self.rows[i]))
             .flatten()
             .map(|(side, i)| {
                 crate::ui::render::display_width(self.session.doc(side).line(i), self.cfg.tab_width)
@@ -514,9 +585,19 @@ impl App {
         } else {
             query.clone().into_bytes()
         };
+        // A match in folded lines unfolds them, so search sees every line.
+        if jump && self.fold && !needle.is_empty() && self.folded_lines_match(&needle, insensitive)
+        {
+            let anchor = self.anchor();
+            self.fold = false;
+            self.rebuild(anchor);
+        }
         let mut matches = Vec::new();
         if !needle.is_empty() {
             for (ri, row) in self.rows.iter().enumerate() {
+                if self.is_fold(ri) {
+                    continue;
+                }
                 for (side, li) in self.lines_for_search(row) {
                     let line = self.session.doc(side).line(li);
                     let hay: std::borrow::Cow<[u8]> = if insensitive {
@@ -560,6 +641,26 @@ impl App {
                 self.show_current_match();
             }
         }
+    }
+
+    fn folded_lines_match(&self, needle: &[u8], insensitive: bool) -> bool {
+        self.folds.values().any(|f| {
+            f.right.clone().any(|i| {
+                let line = self.session.right.line(i);
+                if insensitive {
+                    find(&line.to_ascii_lowercase(), needle).is_some()
+                } else {
+                    find(line, needle).is_some()
+                }
+            }) || f.left.clone().any(|i| {
+                let line = self.session.left.line(i);
+                if insensitive {
+                    find(&line.to_ascii_lowercase(), needle).is_some()
+                } else {
+                    find(line, needle).is_some()
+                }
+            })
+        })
     }
 
     fn show_current_match(&mut self) {
@@ -686,10 +787,10 @@ impl App {
         let pending = self.pending.take();
         match (pending, key.code) {
             (Some('g'), KeyCode::Char('g')) => return self.center_top(0),
-            (Some('z'), KeyCode::Char('h')) => return self.scroll_sideways(false),
-            (Some('z'), KeyCode::Char('l')) => return self.scroll_sideways(true),
             (Some(']'), KeyCode::Char('c')) => return self.next_hunk(),
             (Some('['), KeyCode::Char('c')) => return self.prev_hunk(),
+            (Some(']'), KeyCode::Char('f')) => return self.step_file(true),
+            (Some('['), KeyCode::Char('f')) => return self.step_file(false),
             _ => {}
         }
         match key.code {
@@ -703,7 +804,8 @@ impl App {
                 self.cursor = last;
                 self.ensure_visible();
             }
-            KeyCode::Char(c @ ('g' | 'z' | '[' | ']')) => self.pending = Some(c),
+            KeyCode::Char(c @ ('g' | '[' | ']')) => self.pending = Some(c),
+            KeyCode::Char('z') => self.toggle_fold(),
             KeyCode::Char('J') => self.next_hunk(),
             KeyCode::Char('K') => self.prev_hunk(),
             KeyCode::Left => self.scroll_sideways(false),
@@ -757,6 +859,19 @@ impl App {
             KeyCode::Backspace if self.in_directory => self.outcome = Some(Outcome::Back),
             KeyCode::F(1) => self.help = true,
             _ => {}
+        }
+    }
+
+    /// `]f` / `[f`: the next or previous changed file, without going back.
+    fn step_file(&mut self, forward: bool) {
+        if self.in_directory {
+            self.outcome = Some(if forward {
+                Outcome::NextFile
+            } else {
+                Outcome::PrevFile
+            });
+        } else {
+            self.message = Some("only one file to compare".into());
         }
     }
 
@@ -815,6 +930,16 @@ impl App {
                         self.focus = side;
                     }
                     self.pointer_acted();
+                    true
+                }
+                Some(Hit::Back) => {
+                    self.pointer_acted();
+                    self.outcome = Some(Outcome::Back);
+                    true
+                }
+                Some(Hit::Tool(c)) => {
+                    self.pointer_acted();
+                    self.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
                     true
                 }
                 None => false,
@@ -1210,6 +1335,31 @@ impl App {
         }
     }
 
+    /// The status bar's left side: where the cursor is, in words.
+    pub fn cursor_state(&self) -> String {
+        let total = self.session.hunks.len();
+        if total == 0 {
+            return "no differences".into();
+        }
+        match self.current_hunk() {
+            Some(h) => format!("hunk {} of {total}", h + 1),
+            None => "after the last hunk".into(),
+        }
+    }
+
+    /// The focused side's line at the cursor, from 1.
+    pub fn cursor_line(&self) -> usize {
+        let side = match self.view {
+            View::SideBySide => self.focus,
+            View::Unified => self
+                .rows
+                .get(self.cursor)
+                .and_then(Self::unified_line)
+                .map_or(Side::Right, |(s, _)| s),
+        };
+        self.line_near_cursor(side) + 1
+    }
+
     pub fn hunk_label(&self) -> String {
         let total = self.session.hunks.len();
         match self.current_hunk() {
@@ -1225,4 +1375,44 @@ impl App {
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     memchr::memmem::find(hay, needle)
+}
+
+/// Fold every run of unchanged rows longer than the context kept around the
+/// hunks into one row, which keeps the run's first line on each side.
+fn fold_rows(rows: Vec<Row>) -> (Vec<Row>, HashMap<usize, Fold>) {
+    let mut out = Vec::with_capacity(rows.len());
+    let mut folds = HashMap::new();
+    let mut i = 0;
+    while i < rows.len() {
+        if rows[i].kind != RowKind::Same {
+            out.push(rows[i]);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < rows.len() && rows[i].kind == RowKind::Same {
+            i += 1;
+        }
+        let keep_before = if start > 0 { FOLD_CONTEXT } else { 0 };
+        let keep_after = if i < rows.len() { FOLD_CONTEXT } else { 0 };
+        let (from, to) = (start + keep_before, i.saturating_sub(keep_after));
+        // Folding a single line would hide nothing worth a row.
+        if to <= from + 1 {
+            out.extend_from_slice(&rows[start..i]);
+            continue;
+        }
+        out.extend_from_slice(&rows[start..from]);
+        let line = |r: &Row, left: bool| if left { r.left } else { r.right }.unwrap_or(0);
+        let (first, last) = (&rows[from], &rows[to - 1]);
+        folds.insert(
+            out.len(),
+            Fold {
+                left: line(first, true)..line(last, true) + 1,
+                right: line(first, false)..line(last, false) + 1,
+            },
+        );
+        out.push(*first);
+        out.extend_from_slice(&rows[to..i]);
+    }
+    (out, folds)
 }

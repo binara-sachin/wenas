@@ -120,7 +120,18 @@ pub fn quantize(c: Rgb, depth: Depth) -> Color {
 pub struct Theme {
     pub no_color: bool,
     pub dark: bool,
+    /// The title bar, the brightest surface (spec §6).
+    pub title_bg: Color,
+    /// Toolbar and status bar.
     pub panel_bg: Color,
+    /// The back control in the title bar.
+    pub back_bg: Color,
+    /// The selected row in the directory list.
+    pub select_bg: Color,
+    /// A folded run of unchanged lines.
+    pub fold_bg: Color,
+    /// A key hint for an action that doesn't apply right now.
+    pub off: Color,
     pub dim: Color,
     pub muted: Color,
     pub bright: Color,
@@ -129,6 +140,8 @@ pub struct Theme {
     pub cursor_bg: Color,
     pub changed_bg: Color,
     pub changed_word_bg: Color,
+    /// Changes under three characters: a stronger tint, with bold text.
+    pub changed_short_bg: Color,
     pub added_bg: Color,
     pub added_word_bg: Color,
     pub removed_bg: Color,
@@ -143,7 +156,12 @@ pub struct Theme {
 
 /// Colour names accepted in `[colors]` (same as the `Theme` fields).
 pub const COLOR_NAMES: &[&str] = &[
+    "title_bg",
     "panel_bg",
+    "back_bg",
+    "select_bg",
+    "fold_bg",
+    "off",
     "dim",
     "muted",
     "bright",
@@ -152,6 +170,7 @@ pub const COLOR_NAMES: &[&str] = &[
     "cursor_bg",
     "changed_bg",
     "changed_word_bg",
+    "changed_short_bg",
     "added_bg",
     "added_word_bg",
     "removed_bg",
@@ -191,7 +210,12 @@ impl Theme {
             };
             let c = quantize(rgb, depth);
             let slot = match name.as_str() {
+                "title_bg" => &mut self.title_bg,
                 "panel_bg" => &mut self.panel_bg,
+                "back_bg" => &mut self.back_bg,
+                "select_bg" => &mut self.select_bg,
+                "fold_bg" => &mut self.fold_bg,
+                "off" => &mut self.off,
                 "dim" => &mut self.dim,
                 "muted" => &mut self.muted,
                 "bright" => &mut self.bright,
@@ -200,6 +224,7 @@ impl Theme {
                 "cursor_bg" => &mut self.cursor_bg,
                 "changed_bg" => &mut self.changed_bg,
                 "changed_word_bg" => &mut self.changed_word_bg,
+                "changed_short_bg" => &mut self.changed_short_bg,
                 "added_bg" => &mut self.added_bg,
                 "added_word_bg" => &mut self.added_word_bg,
                 "removed_bg" => &mut self.removed_bg,
@@ -228,15 +253,21 @@ impl Theme {
         Theme {
             no_color,
             dark,
+            title_bg: c(0x2b3242, 0xdedbd2),
             panel_bg: c(0x222833, 0xebe9e2),
+            back_bg: c(0x3a4256, 0xcac6bb),
+            select_bg: c(0x2a3347, 0xdfe6f3),
+            fold_bg: c(0x1f232c, 0xf0eee8),
+            off: c(0x3f4756, 0xc4c1b8),
             dim: c(0x5f6878, 0x8a8780),
             muted: c(0x8a93a3, 0x6b6a68),
             bright: c(0xeef2f8, 0x1f1e1d),
             amber: c(0xe7b04b, 0xb7791f),
             on_amber: c(0x1b1f27, 0xfaf9f5),
-            cursor_bg: c(0x222833, 0xebe9e2),
+            cursor_bg: c(0x232937, 0xefede7),
             changed_bg: c(0x232d42, 0xe3eaf6),
             changed_word_bg: c(0x3a4f7a, 0xb9cbec),
+            changed_short_bg: c(0x4f6aa3, 0x8fb0e6),
             added_bg: c(0x1f3229, 0xe2f1e6),
             added_word_bg: c(0x2f5c43, 0xb3dcbf),
             removed_bg: c(0x3b2428, 0xf7e1e1),
@@ -497,7 +528,7 @@ mod tests {
         assert_eq!(t.changed_bg, Color::Reset);
         assert_eq!(parse_hex("2a2f3a"), Some((0x2a, 0x2f, 0x3a)));
         assert_eq!(parse_hex("#12345"), None);
-        assert_eq!(COLOR_NAMES.len(), 19);
+        assert_eq!(COLOR_NAMES.len(), 25);
     }
 
     #[test]

@@ -2,23 +2,23 @@
 source: tests/ui.rs
 expression: text(&mut a)
 ---
- Keys                                                                               F1 or Esc close
+ a/src ↔ src   › auth/token.rs
+ Keys
 
   Move                            Hunks                           Files
   j k        line down, up        J K        next, previous       w          save
   Ctrl-d u   half page            ]c [c      next, previous       e          open in $EDITOR
-  gg G       top, bottom          >          copy to right        q          quit
-  ← →        scroll sideways      <          copy to left         Q          quit, don't save
-  Tab        other pane           u          undo                 Ctrl-c     abort, exit 1
-                                  Ctrl-r     redo
-  Search
+  gg G       top, bottom          >          copy to right        ]f [f      next, previous file
+  ← →        scroll sideways      <          copy to left         Backspace  back to the list
+  Tab        other pane           u          undo                 q          quit
+                                  Ctrl-r     redo                 Q          quit, don't save
+  Search                                                          Ctrl-c     abort, exit 1
   / ?        forward, back        View
   n N        next, previous       v          switch view
   Esc        clear matches        W          whitespace mode
-
-
+                                  z          fold unchanged lines
 
 
   When whitespace is ignored, whitespace-only changes are hidden and can't be copied.
   Mouse: wheel scrolls, click moves, click ← → copies. Shift-drag selects text.
- 1/4   whitespace off  LF | LF
+                                                                                       F1 Esc close

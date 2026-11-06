@@ -30,17 +30,61 @@ pub enum DirAction {
 #[derive(Debug, Clone)]
 pub struct DirSearch {
     pub query: String,
-    /// Indexes into `shown`.
+    /// Indexes into `rows`, file rows only.
     pub matches: Vec<usize>,
     pub current: Option<usize>,
+}
+
+/// What a line of the tree stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Node {
+    /// A folder holding at least one listed file. `files` counts them all,
+    /// however deep.
+    Dir { rel: PathBuf, files: usize },
+    /// A listed entry (index into `entries`).
+    File(usize),
+}
+
+/// One line of the tree. Rows are in the walk's order (preorder), so a
+/// folder is always followed by everything under it.
+#[derive(Debug, Clone)]
+pub struct Row {
+    pub node: Node,
+    pub depth: usize,
+    parent: Option<usize>,
+    /// No sibling follows (yet: one streaming in later clears it).
+    last: bool,
+    /// For folders, the newest child so far.
+    last_child: Option<usize>,
+}
+
+impl Row {
+    fn dir_rel(&self) -> Option<&PathBuf> {
+        match &self.node {
+            Node::Dir { rel, .. } => Some(rel),
+            Node::File(_) => None,
+        }
+    }
+
+    fn same(&self, node: &Node) -> bool {
+        match (&self.node, node) {
+            (Node::Dir { rel: a, .. }, Node::Dir { rel: b, .. }) => a == b,
+            (a, b) => a == b,
+        }
+    }
 }
 
 pub struct DirView {
     pub left: PathBuf,
     pub right: PathBuf,
     pub entries: Vec<Entry>,
-    /// Indexes into `entries` that are visible, in order.
-    pub shown: Vec<usize>,
+    /// The tree of listed entries and the folders that hold them.
+    pub rows: Vec<Row>,
+    /// Indexes into `rows` that are not inside a folded folder, in order.
+    /// `cursor` and `top` are positions in this list.
+    pub visible: Vec<usize>,
+    /// Folded folders, by path, so folding survives rebuilding the tree.
+    pub folded: HashSet<PathBuf>,
     pub show_identical: bool,
     pub cursor: usize,
     pub top: usize,
@@ -58,8 +102,13 @@ pub struct DirView {
     pub message_is_error: bool,
     pub help: bool,
     pending_g: bool,
-    /// The entry last pressed, and when, to recognise a double-click.
+    /// The row last pressed, and when, to recognise a double-click.
     last_click: Option<(usize, Instant)>,
+    /// Folder rows holding the newest file, outermost first, so the next
+    /// entry can reuse the ones it shares.
+    open_dirs: Vec<usize>,
+    /// The newest top-level row.
+    last_top: Option<usize>,
     scan: Option<Scan>,
     started: Instant,
 }
@@ -76,7 +125,9 @@ impl DirView {
             left,
             right,
             entries: Vec::new(),
-            shown: Vec::new(),
+            rows: Vec::new(),
+            visible: Vec::new(),
+            folded: HashSet::new(),
             show_identical,
             cursor: 0,
             top: 0,
@@ -94,6 +145,8 @@ impl DirView {
             help: false,
             pending_g: false,
             last_click: None,
+            open_dirs: Vec::new(),
+            last_top: None,
             scan: Some(scan),
             started: Instant::now(),
         };
@@ -118,7 +171,7 @@ impl DirView {
                 let show = e.status.differs() || self.show_identical;
                 self.entries.push(e);
                 if show {
-                    self.shown.push(self.entries.len() - 1);
+                    self.push_entry(self.entries.len() - 1);
                 }
             }
             Msg::Scanned(n) => self.files_seen = n.max(self.files_seen),
@@ -154,20 +207,173 @@ impl DirView {
         }
     }
 
-    pub fn selected(&self) -> Option<usize> {
-        self.shown.get(self.cursor).copied()
+    /// Add a listed entry to the tree, with any folders it needs. Entries
+    /// arrive in the walk's order, so the folders it shares with the previous
+    /// entry are the open ones it reuses.
+    fn push_entry(&mut self, e: usize) {
+        let rel = self.entries[e].rel.clone();
+        let parts: Vec<_> = rel.components().collect();
+        let dirs = parts.len().saturating_sub(1);
+        let mut at = PathBuf::new();
+        for (depth, part) in parts[..dirs].iter().enumerate() {
+            at.push(part);
+            let reuse = self
+                .open_dirs
+                .get(depth)
+                .is_some_and(|&r| self.rows[r].dir_rel() == Some(&at));
+            if !reuse {
+                self.open_dirs.truncate(depth);
+                let r = self.add_row(Node::Dir {
+                    rel: at.clone(),
+                    files: 0,
+                });
+                self.open_dirs.push(r);
+            }
+        }
+        self.open_dirs.truncate(dirs);
+        for &d in &self.open_dirs {
+            if let Node::Dir { files, .. } = &mut self.rows[d].node {
+                *files += 1;
+            }
+        }
+        self.add_row(Node::File(e));
     }
 
-    /// Rebuild `shown`, keeping the cursor on the same entry when it is still visible.
+    /// Append a row under the innermost open folder.
+    fn add_row(&mut self, node: Node) -> usize {
+        let parent = self.open_dirs.last().copied();
+        let r = self.rows.len();
+        let prev = match parent {
+            Some(p) => self.rows[p].last_child.replace(r),
+            None => self.last_top.replace(r),
+        };
+        if let Some(prev) = prev {
+            self.rows[prev].last = false;
+        }
+        self.rows.push(Row {
+            node,
+            depth: self.open_dirs.len(),
+            parent,
+            last: true,
+            last_child: None,
+        });
+        if !self.inside_folded(r) {
+            self.visible.push(r);
+        }
+        r
+    }
+
+    fn is_folded(&self, row: usize) -> bool {
+        self.rows[row]
+            .dir_rel()
+            .is_some_and(|rel| self.folded.contains(rel))
+    }
+
+    fn inside_folded(&self, row: usize) -> bool {
+        let mut p = self.rows[row].parent;
+        while let Some(a) = p {
+            if self.is_folded(a) {
+                return true;
+            }
+            p = self.rows[a].parent;
+        }
+        false
+    }
+
+    /// The row under the cursor.
+    fn current_row(&self) -> Option<usize> {
+        self.visible.get(self.cursor).copied()
+    }
+
+    /// The entry at a position in `visible`, if that row is a file.
+    pub fn entry_at(&self, pos: usize) -> Option<usize> {
+        match self.rows[*self.visible.get(pos)?].node {
+            Node::File(e) => Some(e),
+            Node::Dir { .. } => None,
+        }
+    }
+
+    /// Where the entry with this path is in `visible`.
+    pub fn position_of(&self, rel: &std::path::Path) -> Option<usize> {
+        (0..self.visible.len())
+            .find(|&p| self.entry_at(p).is_some_and(|e| self.entries[e].rel == rel))
+    }
+
+    pub fn selected(&self) -> Option<usize> {
+        self.entry_at(self.cursor)
+    }
+
+    /// Put the cursor on a row, or the nearest visible one before it.
+    fn cursor_to(&mut self, row: usize) {
+        self.cursor = match self.visible.binary_search(&row) {
+            Ok(p) => p,
+            Err(p) => p.saturating_sub(1),
+        };
+        self.cursor = self.cursor.min(self.visible.len().saturating_sub(1));
+        self.ensure_visible();
+    }
+
+    /// Recompute `visible` after folding or unfolding, keeping the cursor's row.
+    fn refold(&mut self) {
+        let keep = self.current_row();
+        let mut visible = Vec::with_capacity(self.rows.len());
+        // While set, rows deeper than this are inside a folded folder.
+        let mut skip: Option<usize> = None;
+        for (i, r) in self.rows.iter().enumerate() {
+            if let Some(d) = skip {
+                if r.depth > d {
+                    continue;
+                }
+                skip = None;
+            }
+            visible.push(i);
+            if self.is_folded(i) {
+                skip = Some(r.depth);
+            }
+        }
+        self.visible = visible;
+        self.last_click = None;
+        if let Some(k) = keep {
+            self.cursor_to(k);
+        }
+        // Folding near the end would otherwise leave the screen half empty.
+        self.top = self
+            .top
+            .min(self.visible.len().saturating_sub(self.content_height()));
+    }
+
+    fn set_folded(&mut self, row: usize, fold: bool) {
+        let Some(rel) = self.rows[row].dir_rel().cloned() else {
+            return;
+        };
+        let changed = if fold {
+            self.folded.insert(rel)
+        } else {
+            self.folded.remove(&rel)
+        };
+        if changed {
+            self.refold();
+        }
+    }
+
+    /// Rebuild the tree, keeping the cursor on the same row when it is still listed.
     fn reshow(&mut self) {
-        let keep = self.selected();
-        self.shown = (0..self.entries.len())
-            .filter(|&i| self.show_identical || self.entries[i].status.differs())
-            .collect();
+        let keep = self.current_row().map(|r| self.rows[r].node.clone());
+        let at = self.cursor;
+        self.rows.clear();
+        self.visible.clear();
+        self.open_dirs.clear();
+        self.last_top = None;
+        self.last_click = None;
+        for i in 0..self.entries.len() {
+            if self.show_identical || self.entries[i].status.differs() {
+                self.push_entry(i);
+            }
+        }
         self.cursor = keep
-            .and_then(|k| self.shown.iter().position(|&i| i == k))
-            .unwrap_or(self.cursor);
-        self.cursor = self.cursor.min(self.shown.len().saturating_sub(1));
+            .and_then(|k| self.visible.iter().position(|&r| self.rows[r].same(&k)))
+            .unwrap_or(at);
+        self.cursor = self.cursor.min(self.visible.len().saturating_sub(1));
         self.ensure_visible();
         self.search = None;
     }
@@ -192,7 +398,7 @@ impl DirView {
     }
 
     fn move_by(&mut self, d: isize) {
-        let last = self.shown.len().saturating_sub(1) as isize;
+        let last = self.visible.len().saturating_sub(1) as isize;
         self.cursor = (self.cursor as isize + d).clamp(0, last.max(0)) as usize;
         self.ensure_visible();
     }
@@ -204,23 +410,24 @@ impl DirView {
         } else {
             query.clone()
         };
-        let matches: Vec<usize> = self
-            .shown
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| {
-                let p = self.entries[**e].rel.display().to_string();
+        // Full paths, so `auth/tok` works, and files inside folded folders count too.
+        let matches: Vec<usize> = (0..self.rows.len())
+            .filter(|&r| {
+                let Node::File(e) = self.rows[r].node else {
+                    return false;
+                };
+                let p = self.entries[e].rel.display().to_string();
                 if ci {
                     p.to_lowercase().contains(&q)
                 } else {
                     p.contains(&q)
                 }
             })
-            .map(|(i, _)| i)
             .collect();
+        let here = self.current_row().unwrap_or(0);
         let current = matches
             .iter()
-            .position(|&m| m >= self.cursor)
+            .position(|&m| m >= here)
             .or(if matches.is_empty() { None } else { Some(0) });
         if matches.is_empty() {
             self.message = Some("no matches".into());
@@ -237,8 +444,59 @@ impl DirView {
         if let Some(s) = &self.search
             && let Some(c) = s.current
         {
-            self.cursor = s.matches[c];
-            self.ensure_visible();
+            let row = s.matches[c];
+            // Unfold whatever hides the match.
+            let mut unfolded = false;
+            let mut p = self.rows[row].parent;
+            while let Some(a) = p {
+                if let Some(rel) = self.rows[a].dir_rel() {
+                    unfolded |= self.folded.remove(rel);
+                }
+                p = self.rows[a].parent;
+            }
+            if unfolded {
+                self.refold();
+            }
+            self.cursor_to(row);
+        }
+    }
+
+    /// `h`: fold the folder under the cursor, or go up to the one holding it.
+    fn fold_or_up(&mut self) {
+        let Some(row) = self.current_row() else {
+            return;
+        };
+        if self.rows[row].dir_rel().is_some() && !self.is_folded(row) {
+            self.set_folded(row, true);
+        } else if let Some(p) = self.rows[row].parent {
+            self.cursor_to(p);
+        }
+    }
+
+    /// `l`: unfold the folder under the cursor, or step into it.
+    fn unfold_or_down(&mut self) {
+        let Some(row) = self.current_row() else {
+            return;
+        };
+        if self.is_folded(row) {
+            self.set_folded(row, false);
+        } else if self.rows[row].dir_rel().is_some() {
+            self.move_by(1);
+        }
+    }
+
+    /// Enter, or a double-click: open a file, or fold or unfold a folder.
+    fn activate(&mut self) -> DirAction {
+        let Some(row) = self.current_row() else {
+            return DirAction::None;
+        };
+        match self.rows[row].node {
+            Node::File(e) => DirAction::Open(e),
+            Node::Dir { .. } => {
+                let fold = !self.is_folded(row);
+                self.set_folded(row, fold);
+                DirAction::None
+            }
         }
     }
 
@@ -312,14 +570,12 @@ impl DirView {
             }
             KeyCode::Char('g') => self.pending_g = true,
             KeyCode::Char('G') => {
-                self.cursor = self.shown.len().saturating_sub(1);
+                self.cursor = self.visible.len().saturating_sub(1);
                 self.ensure_visible();
             }
-            KeyCode::Enter => {
-                if let Some(i) = self.selected() {
-                    return DirAction::Open(i);
-                }
-            }
+            KeyCode::Char('h') | KeyCode::Left => self.fold_or_up(),
+            KeyCode::Char('l') | KeyCode::Right => self.unfold_or_down(),
+            KeyCode::Enter => return self.activate(),
             KeyCode::Char('i') => {
                 self.show_identical = !self.show_identical;
                 self.reshow();
@@ -371,7 +627,7 @@ impl DirView {
 
     /// Wheel movement, keeping the selection on screen. Returns whether anything changed.
     pub fn on_scroll(&mut self, lines: isize) -> bool {
-        let Some(last) = self.shown.len().checked_sub(1) else {
+        let Some(last) = self.visible.len().checked_sub(1) else {
             return false;
         };
         if !self.takes_mouse() || lines == 0 {
@@ -379,7 +635,7 @@ impl DirView {
         }
         let before = (self.top, self.cursor);
         let h = self.content_height();
-        let max_top = self.shown.len().saturating_sub(h).max(self.top);
+        let max_top = self.visible.len().saturating_sub(h).max(self.top);
         self.top = (self.top as isize + lines).clamp(0, max_top as isize) as usize;
         let bottom = (self.top + h - 1).min(last);
         self.cursor = self.cursor.clamp(self.top.min(bottom), bottom);
@@ -390,18 +646,19 @@ impl DirView {
         changed
     }
 
-    /// The position in `shown` drawn at this screen row.
+    /// The position in `visible` drawn at this screen row.
     fn row_at(&self, y: u16) -> Option<usize> {
         if too_small(self.width, self.height) || y < CONTENT_Y {
             return None;
         }
         let offset = (y - CONTENT_Y) as usize;
         let row = self.top + offset;
-        (offset < self.content_height() && row < self.shown.len()).then_some(row)
+        (offset < self.content_height() && row < self.visible.len()).then_some(row)
     }
 
-    /// A press selects an entry and a second one on it opens it. `now` is passed
-    /// in so tests can control the timing. `None` means the event did nothing.
+    /// A press selects a row and a second one on it opens the file or folds
+    /// the folder. `now` is passed in so tests can control the timing. `None`
+    /// means the event did nothing.
     pub fn on_mouse(&mut self, event: MouseEvent, now: Instant) -> Option<DirAction> {
         if event.kind != MouseEventKind::Down(MouseButton::Left)
             || !event.modifiers.is_empty()
@@ -409,18 +666,18 @@ impl DirView {
         {
             return None;
         }
-        let row = self.row_at(event.row)?;
-        let entry = self.shown[row];
-        self.cursor = row;
+        let pos = self.row_at(event.row)?;
+        let row = self.visible[pos];
+        self.cursor = pos;
         self.pointer_acted();
         let double = self
             .last_click
-            .is_some_and(|(e, at)| e == entry && now.duration_since(at) <= DOUBLE_CLICK);
+            .is_some_and(|(r, at)| r == row && now.duration_since(at) <= DOUBLE_CLICK);
         if double {
             self.last_click = None;
-            Some(DirAction::Open(entry))
+            Some(self.activate())
         } else {
-            self.last_click = Some((entry, now));
+            self.last_click = Some((row, now));
             Some(DirAction::None)
         }
     }
@@ -441,6 +698,28 @@ fn letter_style(t: &Theme, s: &Status) -> Style {
         Status::Identical => t.dim,
     };
     bold(Style::default().fg(fg))
+}
+
+/// The last part of a path, or all of it when it has none (an error on a root).
+fn leaf_name(rel: &std::path::Path) -> String {
+    rel.file_name().map_or_else(
+        || rel.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// The `tree`-style lines in front of a row's name: a `│` for every enclosing
+/// folder that has more to come, then `├──` or `└──` for the row itself.
+fn branches(dir: &DirView, row: usize) -> String {
+    let mut parts = Vec::with_capacity(dir.rows[row].depth + 1);
+    let r = &dir.rows[row];
+    parts.push(if r.last { "└── " } else { "├── " });
+    let mut p = r.parent;
+    while let Some(a) = p {
+        parts.push(if dir.rows[a].last { "    " } else { "│   " });
+        p = dir.rows[a].parent;
+    }
+    parts.iter().rev().copied().collect()
 }
 
 /// Cut a path to `width` columns, keeping the end and marking the cut with `…`.
@@ -550,7 +829,7 @@ fn draw_rows(buf: &mut Buffer, dir: &DirView, t: &Theme, area: Rect) {
     let h = dir.height as usize - 3;
     let detail_x = (area.width as usize * 21 / 40).max(24);
     let path_w = detail_x.saturating_sub(6);
-    if dir.shown.is_empty() && !dir.scanning {
+    if dir.visible.is_empty() && !dir.scanning {
         let msg = if dir.entries.is_empty() {
             "No files."
         } else {
@@ -567,8 +846,9 @@ fn draw_rows(buf: &mut Buffer, dir: &DirView, t: &Theme, area: Rect) {
     }
     for r in 0..h {
         let i = dir.top + r;
-        let Some(&e) = dir.shown.get(i) else { break };
-        let entry = &dir.entries[e];
+        let Some(&row) = dir.visible.get(i) else {
+            break;
+        };
         let y = r as u16 + CONTENT_Y;
         let selected = i == dir.cursor;
         if selected {
@@ -577,8 +857,18 @@ fn draw_rows(buf: &mut Buffer, dir: &DirView, t: &Theme, area: Rect) {
                 t.emphasis(t.bg(t.changed_bg)),
             );
         }
-        let letter = entry.status.letter().to_string();
-        let mut ls = letter_style(t, &entry.status);
+        let base = if selected {
+            t.bg(t.changed_bg)
+        } else {
+            Style::default()
+        };
+        let node = &dir.rows[row].node;
+        let status = match node {
+            Node::File(e) => Some(&dir.entries[*e].status),
+            Node::Dir { .. } => None,
+        };
+        let letter = status.map_or(' ', Status::letter).to_string();
+        let mut ls = status.map_or(Style::default(), |s| letter_style(t, s));
         if selected {
             ls = if t.no_color {
                 ls.add_modifier(Modifier::REVERSED)
@@ -587,29 +877,46 @@ fn draw_rows(buf: &mut Buffer, dir: &DirView, t: &Theme, area: Rect) {
             };
         }
         buf.set_stringn(1, y, format!(" {letter} "), 3, ls);
-        let rel = entry.rel.display().to_string();
-        let shown = clip_left(&rel, path_w);
-        let split = shown.rfind('/').map_or(0, |p| p + 1);
-        let identical = !entry.status.differs();
-        let base = if selected {
-            t.bg(t.changed_bg)
-        } else {
-            Style::default()
+        let (name, name_style) = match node {
+            Node::Dir { rel, .. } => (format!("{}/", leaf_name(rel)), bold(base.fg(t.muted))),
+            Node::File(e) => {
+                let entry = &dir.entries[*e];
+                let fg = if entry.status.differs() {
+                    t.bright
+                } else {
+                    t.dim
+                };
+                (leaf_name(&entry.rel), base.fg(fg))
+            }
         };
-        let (dir_style, name_style) = if identical {
-            (base.fg(t.dim), base.fg(t.dim))
-        } else {
-            (base.fg(t.dim), base.fg(t.bright))
-        };
-        buf.set_stringn(5, y, &shown[..split], path_w, dir_style);
-        let nx = 5 + shown[..split].chars().count() as u16;
-        buf.set_stringn(nx, y, &shown[split..], path_w, name_style);
-        let (text, style) = if dir.unsaved.contains(&e) {
-            ("unsaved changes [+]".to_string(), bold(base.fg(t.amber)))
-        } else if let Status::Error(m) = &entry.status {
-            (m.clone(), base.fg(t.removed_fg))
-        } else {
-            (entry.status.detail(), base.fg(t.dim))
+        // The branches give way first on a deep tree, then the name's start.
+        let line = clip_left(&format!("{}{name}", branches(dir, row)), path_w);
+        let total = line.chars().count();
+        let split = total - name.chars().count().min(total);
+        let split = line
+            .char_indices()
+            .nth(split)
+            .map_or(line.len(), |(b, _)| b);
+        buf.set_stringn(5, y, &line[..split], path_w, base.fg(t.dim));
+        let nx = 5 + line[..split].chars().count() as u16;
+        buf.set_stringn(nx, y, &line[split..], path_w, name_style);
+        let (text, style) = match node {
+            Node::Dir { files, .. } if dir.is_folded(row) => (
+                format!(
+                    "folded, {} file{}",
+                    thousands(*files),
+                    if *files == 1 { "" } else { "s" }
+                ),
+                base.fg(t.dim),
+            ),
+            Node::Dir { .. } => (String::new(), base),
+            Node::File(e) if dir.unsaved.contains(e) => {
+                ("unsaved changes [+]".to_string(), bold(base.fg(t.amber)))
+            }
+            Node::File(e) => match &dir.entries[*e].status {
+                Status::Error(m) => (m.clone(), base.fg(t.removed_fg)),
+                s => (s.detail(), base.fg(t.dim)),
+            },
         };
         buf.set_stringn(
             detail_x as u16,
@@ -739,12 +1046,13 @@ fn draw_dir_help(buf: &mut Buffer, t: &Theme, area: Rect) {
                 ("j k", "down, up"),
                 ("Ctrl-d u", "half page"),
                 ("gg G", "first, last"),
+                ("h l", "fold, unfold a folder"),
             ],
         ),
         (
             "Files",
             &[
-                ("Enter", "open the file"),
+                ("Enter", "open the file, fold a folder"),
                 ("i", "show or hide identical"),
                 ("Backspace", "back here from a file"),
             ],
@@ -762,7 +1070,7 @@ fn draw_dir_help(buf: &mut Buffer, t: &Theme, area: Rect) {
             "Mouse",
             &[
                 ("Wheel", "scroll the list"),
-                ("Click", "select, twice to open"),
+                ("Click", "select, twice to open or fold"),
             ],
         ),
     ];

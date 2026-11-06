@@ -215,17 +215,22 @@ All hunk actions work the same way in both views.
 ```
  left: /tmp/git-difftool.Xa12/left   right: ~/code/app   [identical hidden]
 ──────────────────────────────────────────────────────────────────────────────
- M   src/auth/token.rs
- M   src/auth/session.rs
- R   src/auth/refresh.rs            only on right
- L   docs/old-flow.md               only on left
- B   assets/logo.png                binary · differs at byte 2,048
- T   config                         file vs directory
+     ├── assets/
+ B   │   └── logo.png               binary · differs at byte 2,048
+ T   ├── config                     file vs directory
+     ├── docs/
+ L   │   └── old-flow.md            only on left
+     └── src/
+         └── auth/
+ R           ├── refresh.rs         only on right
+ M           ├── session.rs
+ M           └── token.rs
 ──────────────────────────────────────────────────────────────────────────────
  6 differ · scanning… 1,204 files · i: show identical · Enter: open
 ```
 
-- Results appear as the walk finds them.
+- Results appear as the walk finds them, as a tree in the walk's name order (like `tree`). Folders appear only to hold listed files, so with identical files hidden a folder with no differences is not shown.
+- `Enter` (or `h` / `l`) folds and unfolds a folder; a folded folder shows how many files it holds. Folding survives `i`.
 - `i` toggles identical files (hidden by default).
 - `Enter` opens the selected file in the file view; `Backspace` returns to the list, keeping the selection.
 - A one-sided file opens against an empty pane on the other side, so its hunk can be copied across.
@@ -280,9 +285,10 @@ All hunk actions work the same way in both views.
 |---|---|
 | `j` / `k`, `↓` / `↑` | Move the selection |
 | `gg` / `G` | First / last entry |
-| `Enter` | Open the selected file |
+| `h` / `l`, `←` / `→` | Fold a folder, or go up to the one holding the selection / unfold a folder, or step into it |
+| `Enter` | Open the selected file, or fold / unfold the selected folder |
 | `i` | Show / hide identical files |
-| `/` / `n` / `N` | Search file names |
+| `/` / `n` / `N` | Search file paths; a match inside a folded folder unfolds it |
 | `q` | Quit (asks first if any opened file has unsaved changes) |
 | `Ctrl-c` | Abort with exit code 1 |
 | `F1` | Help |
@@ -316,7 +322,7 @@ A shortcut layer: every action has a key, and `mouse = false` turns it off.
 | Wheel, trackpad | Scroll the view; the cursor moves only to stay on screen | Same |
 | Sideways wheel, swipe | Scroll both panes sideways | Nothing |
 | Left press on a row | Move the cursor there and focus that pane | Select the entry |
-| Second press within 400 ms | As above | Open the entry |
+| Second press within 400 ms | As above | Open the file, or fold / unfold the folder |
 | Left press and release on a gutter `←` or `→` | Copy the current hunk | |
 
 - **Keeping the cursor on screen** is what makes a copy safe: `>` and `<` act on the hunk at the cursor (§7.3), so it must never be out of sight. Scrolling can change the current hunk, and the gutter shows which one it is.
@@ -557,3 +563,4 @@ CI runs on macOS and Linux.
 | D43 | Mouse support is a shortcut layer over the keyboard (§7.6). wenas asks only for `?1002` and `?1006`, not crossterm's `EnableMouseCapture`, whose `?1003` reports every pointer movement. The event loop sums a burst of wheel events into one frame and skips drawing for events that change nothing, because a scrolling frame takes about 7 ms at 200×50 before the terminal draws it. Reporting is turned off for `$EDITOR` and on panic, and `SIGTERM` and `SIGHUP` now restore the terminal, since a killed wenas would otherwise leave clicks printing escape codes into the shell. In-app text selection is left out: tmux drops an application's OSC 52 clipboard write under its default `set-clipboard external`, so Shift-drag (the terminal's own selection) is the supported way to copy text. |
 | D44 | Bracketed paste is always on (§7.7): pasted text never runs as commands, and only the search prompt takes it. |
 | D45 | The theme query waits for the terminal's reply with `select`, not `poll`. On macOS `poll` reports `POLLNVAL` for a terminal device straight away, so the `read` after it blocked: with a terminal that never answered, wenas stalled before drawing until a key came and then swallowed that key. Now a silent terminal costs only the 150 ms timeout, as S2 intended. |
+| D46 | The directory list is a tree (§6.3), drawn with `tree`'s `├──` / `└──` / `│` lines. The walk already emits entries in preorder (D31), so the tree is built as results stream in, with no buffering: each entry reuses the folders it shares with the previous one. Whether a row is the last of its siblings is tracked per parent and the lines are drawn from it at draw time, so a sibling that arrives later turns an earlier `└──` into `├──`. Folders are rows the cursor can stop on; `Enter`, `h` / `l` and a double-click fold them, and folding is kept by path so `i` and returning from a file keep it. Search still matches full file paths and unfolds what hides a match. A deep tree gives up its leading branch lines (marked `…`) before the name. |

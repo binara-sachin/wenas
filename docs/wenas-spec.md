@@ -227,19 +227,19 @@ All hunk actions work the same way in both views. There are no pane headers; whe
  wenas    wso2is-5.11.0.396 ↔ wso2is-5.11.0.445   /repository/deployment/server/webapps   23 of 92
  show  i ○ identical    m ● one side only    b ○ binary    . ○ hidden files      / find   92 of 4,879 files  ·  4,787 identical hidden
 
-    ▾ accountrecoveryendpoint/                                                          8 changed
-      ▾ META-INF/maven/org.wso2.identity.apps/recovery-portal/                          2 changed
- M          pom.properties
- M        password-recovery.jsp
-    ▾ api#identity#auth#v1.1/                                                           3 changed
- M        WEB-INF/web.xml
- R        Resources_pt_BR.properties                                                only on right
- B        images/logo.png                                              binary, differs at byte 2,048
+    ├── accountrecoveryendpoint/                                                        8 changed
+    │   ├── META-INF/maven/org.wso2.identity.apps/recovery-portal/                      2 changed
+ M  │   │   └── pom.properties
+ M  │   └── password-recovery.jsp
+    └── authenticationendpoint/                                                         3 changed
+ M      ├── WEB-INF/web.xml
+ R      ├── Resources_pt_BR.properties                                              only on right
+ B      └── images/logo.png                                            binary, differs at byte 2,048
  authenticationendpoint/WEB-INF/…/i18n/Resources_fr_FR.properties   modified    Enter open   h l fold folder   ]f [f next, previous change   F1 help   q quit
 ```
 
-- Results appear as the walk finds them, as a tree in the walk's name order, indented two columns a level with `▾` (open) or `▸` (folded) before a folder. Folders appear only to hold listed files, so with identical files hidden a folder with no differences is not shown. Folder rows show how many changed files they hold.
-- Below the top level, a folder with one child shares that child's row, so a chain of such folders reads as one path (`META-INF/maven/…/`, `WEB-INF/web.xml`). This is decided when the list is drawn, so a sibling that streams in later gives the folder its own row again.
+- Results appear as the walk finds them, as a tree in the walk's name order, drawn with `tree`'s `├──` / `└──` / `│` lines (D46); a folded folder ends its line with `─▸`. Folders appear only to hold listed files, so with identical files hidden a folder with no differences is not shown. Folder rows show how many changed files they hold.
+- Below the top level, a folder with one child shares that child's row, so a chain of such folders reads as one path (`META-INF/maven/…/`, `WEB-INF/web.xml`). This is decided when the list is drawn, so a sibling that streams in later gives the folder its own row again. A merged row takes its place in the lines from the chain's top folder. A deep tree gives up its leading lines first (marked `…`), then the name's start.
 - `Enter` (or `h` / `l`) folds and unfolds a folder. Folding survives `i`. Moving keeps three rows of context above and below the selection.
 - The toolbar shows or hides four kinds of file, each with a key and a chip (`●` shown, `○` hidden) that a click flips:
   - `i` identical files (hidden by default);
@@ -595,3 +595,4 @@ CI runs on macOS and Linux.
 | D46 | The directory list is a tree (§6.3), drawn with `tree`'s `├──` / `└──` / `│` lines. The walk already emits entries in preorder (D31), so the tree is built as results stream in, with no buffering: each entry reuses the folders it shares with the previous one. Whether a row is the last of its siblings is tracked per parent and the lines are drawn from it at draw time, so a sibling that arrives later turns an earlier `└──` into `├──`. Folders are rows the cursor can stop on; `Enter`, `h` / `l` and a double-click fold them, and folding is kept by path so `i` and returning from a file keep it. Search still matches full file paths and unfolds what hides a match. A deep tree gives up its leading branch lines (marked `…`) before the name. |
 | D47 | The directory list has four filters (§6.3): identical, missing (one side only), binary and hidden (dot) files, each a key and a clickable chip in a bar on the row between the header and the list, which was blank, so the list loses no rows. They replace the header's `[identical hidden]` tag. A file is listed only if every kind it belongs to is shown. The binary flag is kept on the entry apart from its status, so it is known for identical files (`compare_files` already sniffs both starts) and one-sided files (sniffed on the pool, 8 KB each, so a large one-sided tree doesn't hold up the walk), and it survives a save that makes a file identical. Hidden means a path part starting with `.`, not the macOS hidden flag, which would cost a `stat` per entry. Chips are placed by a function of the width shared by drawing and clicking, so a click always hits what is drawn; chips that don't fit are left out. Filtering stays in the list: the file view compares one pair and has nothing to filter. |
 | D48 | The UI follows the four-zone design (§6): title bar, toolbar, content, status bar, each always on its own row, separated by surfaces (`title_bg` › `panel_bg` › content) rather than rules. The header's two full paths became a title that shows only what tells the sides apart (`Roots`: the last differing path part of each, their shared start once, and the shared tail), because temp-dir roots carry no information. Settings moved from the status bar to the toolbar as key, label, value; the status bar's left reads the cursor's state in words instead of `1/4`. One layout source (`chrome`: `BODY_Y`, `CHROME_ROWS`, the width tiers, `toolbar_items`, `chip_spans`) serves drawing and clicking. The tree dropped `tree`'s lines (D46) for indentation and `▾`/`▸`, and merges single-child folder chains; whether a folder merges depends on later siblings, so `visible` is recomputed once per batch of scan results rather than appended to. `z` folds unchanged runs (`App::folds`, keyed by row, each keeping the run's first line so anchors survive the toggle); it takes `z` from the old `zh`/`zl` aliases, which `←`/`→` cover. `]f`/`[f` and the back control are new outcomes the shell acts on, including when they come from a click. |
+| D49 | The directory list keeps D46's `tree` lines rather than D48's indentation and `▾`: the lines show at a glance which rows are siblings and where a folder ends. The lines follow the shown rows, not the raw folders: a row is the last of its siblings when the top of its merged chain is, and each shown folder above contributes `│   ` or `    `. A folded folder's line ends in `─▸` instead of carrying a separate marker. |

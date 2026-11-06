@@ -4,17 +4,17 @@ expression: body(&mut s)
 ---
  show  i ○ identical   m ● one side   b ● binary   . ○ hidden   / find       7 of 12 files  ·  5 filtered out
 
-    ▾ assets/                                                                                              2
- B      logo.png                                                                   binary, differs at byte 2
- R      new.bin                                                                                only on right
- T    config                                                                file on left, directory on right
-    ▾ docs/                                                                                                1
- L      old-flow.md                                                                             only on left
-    ▾ src/                                                                                                 3
-      ▾ auth/                                                                                              3
- R        refresh.rs                                                                           only on right
- M        session.rs
- M        token.rs
+    ├── assets/                                                                                            2
+ B  │   ├── logo.png                                                               binary, differs at byte 2
+ R  │   └── new.bin                                                                            only on right
+ T  ├── config                                                              file on left, directory on right
+    ├── docs/                                                                                              1
+ L  │   └── old-flow.md                                                                         only on left
+    └── src/                                                                                               3
+        └── auth/                                                                                          3
+ R          ├── refresh.rs                                                                     only on right
+ M          ├── session.rs
+ M          └── token.rs
 
 
 

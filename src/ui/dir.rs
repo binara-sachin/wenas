@@ -453,15 +453,39 @@ impl DirView {
         None
     }
 
-    /// How far a row is indented: the folders above it with rows of their own.
-    fn shown_depth(&self, row: usize) -> usize {
-        let mut n = 0;
+    /// The topmost folder merged into a row, or the row itself: the one that
+    /// sits among its shown parent's children.
+    fn chain_top(&self, row: usize) -> usize {
+        let mut r = row;
+        while let Some(p) = self.rows[r].parent.filter(|&p| self.is_merged(p)) {
+            r = p;
+        }
+        r
+    }
+
+    /// The `tree`-style lines in front of a row's name: a `│` for every shown
+    /// folder above it that has more to come, then `├──` or `└──` for the row
+    /// itself (`├─▸` / `└─▸` for a folded folder). Rows merged into a chain
+    /// share one line, so a row is last when its chain's top is.
+    fn branches(&self, row: usize) -> String {
+        let own = if self.rows[self.chain_top(row)].last {
+            "└"
+        } else {
+            "├"
+        };
+        let tip = if self.is_folded(row) {
+            "─▸ "
+        } else {
+            "── "
+        };
+        let mut parts = vec![format!("{own}{tip}")];
         let mut p = self.shown_parent(row);
         while let Some(a) = p {
-            n += 1;
+            let more = !self.rows[self.chain_top(a)].last;
+            parts.push(if more { "│   " } else { "    " }.to_string());
             p = self.shown_parent(a);
         }
-        n
+        parts.iter().rev().map(String::as_str).collect()
     }
 
     /// The folders merged into a row, as a path ending in `/`.
@@ -1311,50 +1335,61 @@ fn draw_rows(buf: &mut Buffer, dir: &DirView, t: &Theme, area: Rect) {
             buf.set_stringn(note_x, y, &note, note_w as usize, note_style);
         }
 
-        // The name: indented by depth, folders marked open or folded.
+        // The name, after its tree lines. A deep tree gives up its leading
+        // lines first (marked `…`), then the name's start.
         let max_x = if note_w > 0 {
             note_x.saturating_sub(2)
         } else {
             area.width.saturating_sub(1)
         };
-        let depth = dir.shown_depth(row);
-        let mark = match node {
-            Node::Dir { .. } if dir.is_folded(row) => "▸ ",
-            Node::Dir { .. } => "▾ ",
-            Node::File(_) => "  ",
-        };
-        let indent = format!("{}{mark}", "  ".repeat(depth));
-        let mut x = LETTER_W;
-        let mark_style = if t.no_color { base } else { base.fg(t.dim) };
-        put(buf, &mut x, y, max_x, &indent, mark_style);
-        let prefix = dir.merged_prefix(row);
-        let room = max_x.saturating_sub(x) as usize;
-        match node {
-            Node::Dir { rel, .. } => {
-                let text = format!("{prefix}{}/", leaf_name(rel));
-                put(
-                    buf,
-                    &mut x,
-                    y,
-                    max_x,
-                    &clip_left(&text, room),
-                    base.fg(t.muted),
-                );
-            }
+        let lines_style = if t.no_color { base } else { base.fg(t.dim) };
+        let (name, name_style) = match node {
+            Node::Dir { rel, .. } => (format!("{}/", leaf_name(rel)), base.fg(t.muted)),
             Node::File(e) => {
                 let entry = &dir.entries[*e];
-                let name = leaf_name(&entry.rel);
                 let fg = if entry.status.differs() {
                     t.bright
                 } else {
                     t.dim
                 };
-                let pre = middle_cut(&prefix, room.saturating_sub(name.width()));
-                put(buf, &mut x, y, max_x, &pre, base.fg(t.dim));
-                let room = max_x.saturating_sub(x) as usize;
-                put(buf, &mut x, y, max_x, &clip_left(&name, room), base.fg(fg));
+                (leaf_name(&entry.rel), base.fg(fg))
             }
+        };
+        let prefix_style = match node {
+            Node::Dir { .. } => base.fg(t.muted),
+            Node::File(_) => base.fg(t.dim),
+        };
+        let parts = [
+            (dir.branches(row), lines_style),
+            (dir.merged_prefix(row), prefix_style),
+            (name, name_style),
+        ];
+        draw_clipped(buf, LETTER_W, y, max_x, &parts);
+    }
+}
+
+/// Draw styled parts in a row, keeping the end when they don't fit. The first
+/// part still shown starts with `…`, in its own style.
+fn draw_clipped(buf: &mut Buffer, x: u16, y: u16, max_x: u16, parts: &[(String, Style)]) {
+    let room = max_x.saturating_sub(x) as usize;
+    let total: usize = parts.iter().map(|(s, _)| s.width()).sum();
+    let mut skip = total.saturating_sub(room);
+    let mut cut = skip > 0;
+    let mut x = x;
+    for (text, style) in parts {
+        let w = text.width();
+        if skip >= w {
+            skip -= w;
+            continue;
         }
+        let shown = if cut {
+            cut = false;
+            clip_left(text, w - skip)
+        } else {
+            text.clone()
+        };
+        skip = 0;
+        put(buf, &mut x, y, max_x, &shown, *style);
     }
 }
 

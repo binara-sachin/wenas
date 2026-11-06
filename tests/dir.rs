@@ -251,7 +251,7 @@ fn folders_fold_and_unfold() {
     assert_eq!(s.current, None, "Enter on a folder doesn't open anything");
     assert_eq!(s.dir.visible.len(), rows - 3);
     assert_eq!(s.dir.cursor, auth);
-    assert!(screen(&mut s, (110, 20)).contains("▸ auth/"));
+    assert!(screen(&mut s, (110, 20)).contains("└─▸ auth/"));
     assert!(s.dir.position_of(Path::new("src/auth/token.rs")).is_none());
     key(&mut s, 'l');
     assert_eq!(s.dir.visible.len(), rows);
@@ -312,21 +312,28 @@ fn folders_follow_entries_that_stream_in_later() {
         diff: wenas::ops::DiffPolicy::default(),
     };
     let mut s = Shell::new(dir, opts, (110, 20));
-    assert!(screen(&mut s, (110, 20)).contains(" M      a.rs"));
+    assert!(screen(&mut s, (110, 20)).contains(" M      └── a.rs"));
     s.dir.apply(entry("src/b.rs"));
-    s.dir.apply(entry("z.rs"));
     let v = screen(&mut s, (110, 20));
-    for line in ["    ▾ src/", " M      a.rs", " M      b.rs", " M    z.rs"] {
+    // b.rs arriving turns a.rs's `└──` into `├──`.
+    for line in ["    └── src/", " M      ├── a.rs", " M      └── b.rs"] {
         assert!(v.contains(line), "{line}\n{v}");
     }
     // A folder with one child shares its row; a second child gives it its own.
     s.dir.apply(entry("src/deep/er/c.rs"));
     let v = screen(&mut s, (110, 20));
-    assert!(v.contains(" M      deep/er/c.rs"), "{v}");
+    assert!(v.contains(" M      └── deep/er/c.rs"), "{v}");
     s.dir.cursor = s.dir.position_of(Path::new("src/deep/er/c.rs")).unwrap();
-    s.dir.apply(entry("src/deep/d.rs"));
+    s.dir.apply(entry("src/deep/er/d.rs"));
+    s.dir.apply(entry("z.rs"));
     let v = screen(&mut s, (110, 20));
-    for line in ["      ▾ deep/", " M        er/c.rs", " M        d.rs"] {
+    for line in [
+        "    ├── src/",
+        "    │   └── deep/er/",
+        " M  │       ├── c.rs",
+        " M  │       └── d.rs",
+        " M  └── z.rs",
+    ] {
         assert!(v.contains(line), "{line}\n{v}");
     }
     assert_eq!(
@@ -800,11 +807,11 @@ fn unreadable_entries_show_a_bang_and_the_reason() {
     let mut s = shell(&t);
     let v = body(&mut s);
     assert!(
-        v.contains(" !      server.pem") && v.contains("broken symlink"),
+        v.contains(" !  │   └── server.pem") && v.contains("broken symlink"),
         "{v}"
     );
     assert!(
-        v.contains(" M    ok.txt"),
+        v.contains(" M  └── ok.txt"),
         "the walk continued past the error:\n{v}"
     );
     open(&mut s, "fixtures/server.pem");
@@ -1012,9 +1019,9 @@ fn a_folded_chain_of_folders_keeps_its_own_row() {
     let t = tree();
     let mut s = shell(&t);
     // docs/ holds one listed file, but top-level folders always get a row.
-    assert!(body(&mut s).contains("    ▾ docs/"));
+    assert!(body(&mut s).contains("    ├── docs/"));
     select(&mut s, "src/auth/token.rs");
     key(&mut s, 'h');
     key(&mut s, 'h');
-    assert!(body(&mut s).contains("▸ auth/"));
+    assert!(body(&mut s).contains("└─▸ auth/"));
 }

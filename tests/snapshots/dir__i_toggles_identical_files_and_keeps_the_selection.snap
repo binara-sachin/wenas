@@ -4,19 +4,19 @@ expression: body(&mut s)
 ---
  show  i ● identical   m ● one side   b ● binary   . ● hidden   / find                           9 of 9 files
 
- =    Cargo.toml
-    ▾ assets/                                                                                              1
- B      logo.png                                                                   binary, differs at byte 2
- T    config                                                                file on left, directory on right
-    ▾ docs/                                                                                                1
- =      architecture.md
- L      old-flow.md                                                                             only on left
-    ▾ src/                                                                                                 3
-      ▾ auth/                                                                                              3
- R        refresh.rs                                                                           only on right
- M        session.rs
- M        token.rs
- =      main.rs
+ =  ├── Cargo.toml
+    ├── assets/                                                                                            1
+ B  │   └── logo.png                                                               binary, differs at byte 2
+ T  ├── config                                                              file on left, directory on right
+    ├── docs/                                                                                              1
+ =  │   ├── architecture.md
+ L  │   └── old-flow.md                                                                         only on left
+    └── src/                                                                                               3
+        ├── auth/                                                                                          3
+ R      │   ├── refresh.rs                                                                     only on right
+ M      │   ├── session.rs
+ M      │   └── token.rs
+ =      └── main.rs
 
 
 

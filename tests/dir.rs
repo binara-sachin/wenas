@@ -128,9 +128,7 @@ fn press(s: &mut Shell, c: KeyCode) {
 fn select(s: &mut Shell, rel: &str) {
     let pos = s
         .dir
-        .shown
-        .iter()
-        .position(|&i| s.dir.entries[i].rel == Path::new(rel))
+        .position_of(Path::new(rel))
         .unwrap_or_else(|| panic!("{rel} not shown"));
     s.dir.cursor = pos;
 }
@@ -200,7 +198,7 @@ fn counts_in_the_status_line() {
 fn navigation_keys() {
     let t = tree();
     let mut s = shell(&t);
-    let n = s.dir.shown.len();
+    let n = s.dir.visible.len();
     assert_eq!(s.dir.cursor, 0);
     key(&mut s, 'j');
     key(&mut s, 'j');
@@ -241,6 +239,83 @@ fn search_jumps_between_matching_names() {
 }
 
 #[test]
+fn folders_fold_and_unfold() {
+    let t = tree();
+    let mut s = shell(&t);
+    select(&mut s, "src/auth/token.rs");
+    key(&mut s, 'h');
+    let auth = s.dir.cursor;
+    assert!(s.dir.entry_at(auth).is_none(), "h goes up to the folder");
+    let rows = s.dir.visible.len();
+    press(&mut s, KeyCode::Enter);
+    assert_eq!(s.current, None, "Enter on a folder doesn't open anything");
+    assert_eq!(s.dir.visible.len(), rows - 3);
+    assert_eq!(s.dir.cursor, auth);
+    assert!(screen(&mut s, (110, 20)).contains("folded, 3 files"));
+    assert!(s.dir.position_of(Path::new("src/auth/token.rs")).is_none());
+    key(&mut s, 'l');
+    assert_eq!(s.dir.visible.len(), rows);
+    key(&mut s, 'h');
+    key(&mut s, 'i');
+    assert!(
+        s.dir.position_of(Path::new("src/auth/token.rs")).is_none(),
+        "folding survives showing identical files"
+    );
+    assert!(s.dir.position_of(Path::new("src/main.rs")).is_some());
+}
+
+#[test]
+fn search_unfolds_the_folder_holding_a_match() {
+    let t = tree();
+    let mut s = shell(&t);
+    select(&mut s, "src/auth/token.rs");
+    key(&mut s, 'h');
+    key(&mut s, 'h');
+    assert!(s.dir.position_of(Path::new("src/auth/token.rs")).is_none());
+    key(&mut s, '/');
+    for c in "tok".chars() {
+        key(&mut s, c);
+    }
+    press(&mut s, KeyCode::Enter);
+    assert_eq!(
+        s.dir.entries[s.dir.selected().unwrap()].rel,
+        Path::new("src/auth/token.rs")
+    );
+}
+
+#[test]
+fn branches_follow_entries_that_stream_in_later() {
+    let t = tree();
+    let scan = Scan::spawn(t.left.clone(), t.right.clone(), vec![]);
+    let mut dir = DirView::new(t.left.clone(), t.right.clone(), false, scan, vec![]);
+    let entry = |rel: &str| {
+        wenas::dircmp::Msg::Entry(wenas::dircmp::Entry {
+            rel: rel.into(),
+            status: wenas::dircmp::Status::Modified,
+        })
+    };
+    dir.apply(entry("src/a.rs"));
+    let opts = ShellOptions {
+        theme: theme(),
+        view: ViewConfig::default(),
+        ws: Whitespace::Off,
+        readonly_left: false,
+        readonly_right: false,
+        large_file_bytes: wenas::input::LARGE_FILE_BYTES,
+        diff: wenas::ops::DiffPolicy::default(),
+    };
+    let mut s = Shell::new(dir, opts, (110, 20));
+    assert!(screen(&mut s, (110, 20)).contains("    └── a.rs"));
+    s.dir.apply(entry("src/b.rs"));
+    s.dir.apply(entry("z.rs"));
+    let v = screen(&mut s, (110, 20));
+    for line in ["├── src/", "│   ├── a.rs", "│   └── b.rs", "└── z.rs"]
+    {
+        assert!(v.contains(line), "{line}\n{v}");
+    }
+}
+
+#[test]
 fn enter_opens_the_file_and_backspace_returns() {
     let t = tree();
     let mut s = shell(&t);
@@ -273,10 +348,9 @@ fn finishing_every_hunk_marks_the_file_identical() {
     assert_eq!(read(&t.right, "src/auth/session.rs"), "a\nb\n");
     assert_eq!(s.dir.differ, before - 1);
     assert!(
-        !s.dir
-            .shown
-            .iter()
-            .any(|&i| s.dir.entries[i].rel == Path::new("src/auth/session.rs"))
+        s.dir
+            .position_of(Path::new("src/auth/session.rs"))
+            .is_none()
     );
 }
 
@@ -386,12 +460,7 @@ fn only_on_left_file_opens_against_an_empty_pane_and_is_created_on_save() {
         "created, with its folder"
     );
     press(&mut s, KeyCode::Backspace);
-    assert!(
-        !s.dir
-            .shown
-            .iter()
-            .any(|&i| s.dir.entries[i].rel == Path::new("docs/old-flow.md"))
-    );
+    assert!(s.dir.position_of(Path::new("docs/old-flow.md")).is_none());
 }
 
 #[test]
@@ -690,11 +759,11 @@ fn unreadable_entries_show_a_bang_and_the_reason() {
     let mut s = shell(&t);
     let v = body(&mut s);
     assert!(
-        v.contains("!  fixtures/server.pem") && v.contains("broken symlink"),
+        v.contains("!  │   └── server.pem") && v.contains("broken symlink"),
         "{v}"
     );
     assert!(
-        v.contains("M  ok.txt"),
+        v.contains("M  └── ok.txt"),
         "the walk continued past the error:\n{v}"
     );
     open(&mut s, "fixtures/server.pem");

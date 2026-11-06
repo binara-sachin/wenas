@@ -3,19 +3,19 @@ source: tests/dir.rs
 expression: body(&mut s)
 ---
 
-  =  Cargo.toml
-  B  assets/logo.png                                     binary, differs at byte 2
-  T  config                                              file on left, directory on right
-  =  docs/architecture.md
-  L  docs/old-flow.md                                    only on left
-  R  src/auth/refresh.rs                                 only on right
-  M  src/auth/session.rs
-  M  src/auth/token.rs
-  =  src/main.rs
-
-
-
-
+  =  ├── Cargo.toml
+     ├── assets/
+  B  │   └── logo.png                                    binary, differs at byte 2
+  T  ├── config                                          file on left, directory on right
+     ├── docs/
+  =  │   ├── architecture.md
+  L  │   └── old-flow.md                                 only on left
+     └── src/
+         ├── auth/
+  R      │   ├── refresh.rs                              only on right
+  M      │   ├── session.rs
+  M      │   └── token.rs
+  =      └── main.rs
 
 
 

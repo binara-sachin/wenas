@@ -426,8 +426,8 @@ fn draw_shell(s: &mut Shell) {
     term.draw(|f| s.draw(f)).unwrap();
 }
 
-fn rel(s: &Shell, shown: usize) -> &Path {
-    &s.dir.entries[s.dir.shown[shown]].rel
+fn rel(s: &Shell, pos: usize) -> &Path {
+    &s.dir.entries[s.dir.entry_at(pos).unwrap()].rel
 }
 
 #[test]
@@ -563,4 +563,50 @@ fn help_and_the_search_prompt_ignore_the_mouse_in_the_list() {
     assert!(!s.on_scroll(3, 0));
     assert!(!s.on_mouse(down(5, TOP + 1)));
     assert_eq!((s.dir.top, s.dir.cursor), (0, 0));
+}
+
+#[test]
+fn a_double_click_on_a_folder_folds_it_and_another_unfolds_it() {
+    let t = tree(0);
+    for i in 0..30 {
+        let name = format!("deep/f{i:02}.txt");
+        std::fs::create_dir_all(t.left.join("deep")).unwrap();
+        std::fs::create_dir_all(t.right.join("deep")).unwrap();
+        std::fs::write(t.left.join(&name), "a\n").unwrap();
+        std::fs::write(t.right.join(&name), "b\n").unwrap();
+    }
+    let mut s = shell(&t);
+    let all = s.dir.visible.len();
+    assert!(s.on_mouse(down(5, TOP)));
+    assert_eq!(s.dir.visible.len(), all, "one click only selects");
+    s.on_mouse(up(5, TOP));
+    s.on_mouse(down(5, TOP));
+    assert_eq!(s.dir.visible.len(), 1, "folded");
+    assert_eq!(s.current, None, "a folder never opens");
+    s.on_mouse(up(5, TOP));
+    s.on_mouse(down(5, TOP));
+    s.on_mouse(up(5, TOP));
+    s.on_mouse(down(5, TOP));
+    assert_eq!(s.dir.visible.len(), all, "unfolded");
+}
+
+#[test]
+fn folding_near_the_end_scrolls_back_to_fill_the_screen() {
+    let t = tree(0);
+    for i in 0..40 {
+        let name = format!("deep/f{i:02}.txt");
+        std::fs::create_dir_all(t.left.join("deep")).unwrap();
+        std::fs::create_dir_all(t.right.join("deep")).unwrap();
+        std::fs::write(t.left.join(&name), "a\n").unwrap();
+        std::fs::write(t.right.join(&name), "b\n").unwrap();
+    }
+    let mut s = shell(&t);
+    let key = |s: &mut Shell, c| s.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    key(&mut s, 'G');
+    draw_shell(&mut s);
+    assert!(s.dir.top > 0);
+    key(&mut s, 'h');
+    key(&mut s, 'h');
+    draw_shell(&mut s);
+    assert_eq!((s.dir.visible.len(), s.dir.top, s.dir.cursor), (1, 0, 0));
 }

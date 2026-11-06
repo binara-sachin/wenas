@@ -13,7 +13,7 @@ A fast, minimal terminal diff tool that replaces Meld for two-way comparison.
 - a **gutter** between the panes that shows which way each hunk can be copied
 - **word-level highlighting** inside changed lines, on by default
 - **one keystroke per hunk** (`>` copies right, `<` copies left)
-- a **directory view** that streams results while it scans
+- a **directory view** that shows a tree of what differs, streaming results while it scans
 - **instant startup**, with no editor configuration to load
 
 ## Install
@@ -90,7 +90,7 @@ wenas <(git show HEAD~3:src/main.rs) src/main.rs   # pipes are read-only
 | `Esc` | Cancel a running scan or diff, clear the search |
 | `F1` | Help |
 
-In the directory view: `j` `k` move, `Enter` opens, `i` shows identical files, `/` searches names, `q` quits.
+In the directory view, files are listed as a tree: `j` `k` move, `Enter` opens a file or folds a folder, `h` `l` fold and unfold, `i` shows identical files, `/` searches names, `q` quits.
 
 Pasted text never runs as keys: it goes into the `/` search prompt, and is ignored everywhere else, so a stray paste can't copy, save or quit.
 
@@ -104,7 +104,7 @@ The keyboard does everything; the mouse is a shortcut for the common moves.
 | Sideways wheel or swipe | Scroll both panes sideways |
 | Click a row | Move the cursor there and focus that pane, which also makes that hunk current |
 | Click `←` or `→` in the current hunk's gutter | Copy that hunk (undo with `u`; nothing is saved until `w`) |
-| Click a file in the directory view | Select it; click it again quickly to open it |
+| Click a file in the directory view | Select it; click it again quickly to open it (or fold a folder) |
 
 Questions such as "quit without saving?" only take keys, so a stray click can't answer them.
 

@@ -92,6 +92,7 @@ wenas <(git show HEAD~3:src/main.rs) src/main.rs   # pipes are read-only
 
 In the directory view: `j` `k` move, `Enter` opens, `i` shows identical files, `/` searches names, `q` quits.
 
+Pasted text never runs as keys: it goes into the `/` search prompt, and is ignored everywhere else, so a stray paste can't copy, save or quit.
 
 ## Mouse
 

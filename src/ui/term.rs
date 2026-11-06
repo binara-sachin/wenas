@@ -25,6 +25,10 @@ use std::time::Duration;
 /// also asks for every pointer movement (`?1003`), which nothing here needs.
 const MOUSE_ON: &[u8] = b"\x1b[?1002h\x1b[?1006h";
 const MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1002l";
+/// Bracketed paste: pasted text arrives as one event instead of as key presses,
+/// so pasting `QQ` or `>w` can't quit or save. Always on; it costs nothing.
+const PASTE_ON: &[u8] = b"\x1b[?2004h";
+const PASTE_OFF: &[u8] = b"\x1b[?2004l";
 
 /// Rows per wheel event. Terminals already scale these: Ghostty sends one per row
 /// of trackpad travel and three per mouse wheel notch.
@@ -40,13 +44,19 @@ fn set_mouse(on: bool) {
     let _ = out.flush();
 }
 
+fn set_paste(on: bool) {
+    let mut out = io::stdout();
+    let _ = out.write_all(if on { PASTE_ON } else { PASTE_OFF });
+    let _ = out.flush();
+}
+
 /// What a fatal signal restores: the terminal device and its original settings.
 static TTY_STATE: OnceLock<(i32, libc::termios)> = OnceLock::new();
 
 /// Put the terminal back and die of the same signal. Only async-signal-safe
 /// calls here: `write`, `tcsetattr` and `raise`, plus an atomic read in `get`.
 extern "C" fn restore_and_die(signal: libc::c_int) {
-    const RESET: &[u8] = b"\x1b[?1006l\x1b[?1002l\x1b[?1049l\x1b[?25h";
+    const RESET: &[u8] = b"\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1049l\x1b[?25h";
     // SAFETY: the buffer and termios are valid for the duration of each call, and
     // `SA_RESETHAND | SA_NODEFER` make the `raise` take the default action.
     unsafe {
@@ -106,7 +116,8 @@ impl TerminalGuard {
     /// Mouse reports start here, after the theme query, so they can't land in its reply.
     pub fn enter_screen(&self, mouse: bool) -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
         execute!(io::stdout(), EnterAlternateScreen)?;
-            if mouse {
+        set_paste(true);
+        if mouse {
             set_mouse(true);
         }
         Terminal::new(CrosstermBackend::new(io::stdout()))
@@ -120,6 +131,7 @@ impl Drop for TerminalGuard {
 }
 
 fn restore() {
+    set_paste(false);
     set_mouse(false);
     let _ = execute!(io::stdout(), LeaveAlternateScreen);
     let _ = disable_raw_mode();
@@ -137,6 +149,8 @@ pub trait Ui {
     fn on_scroll(&mut self, lines: isize, columns: isize) -> bool;
     /// Any other mouse event. Returns whether anything changed.
     fn on_mouse(&mut self, event: MouseEvent) -> bool;
+    /// Text pasted with bracketed paste. Returns whether anything changed.
+    fn on_paste(&mut self, text: &str) -> bool;
     /// Called between events while `polling()` is true (e.g. to collect scan results).
     fn tick(&mut self) {}
     /// True while the screen changes on its own and must be redrawn periodically.
@@ -160,6 +174,9 @@ impl Ui for App {
     }
     fn on_mouse(&mut self, event: MouseEvent) -> bool {
         App::on_mouse(self, event)
+    }
+    fn on_paste(&mut self, text: &str) -> bool {
+        App::on_paste(self, text)
     }
     fn tick(&mut self) {
         App::tick(self);
@@ -245,6 +262,11 @@ fn handle_events<U: Ui>(ui: &mut U) -> io::Result<bool> {
                 ui.on_key(k);
                 return Ok(true);
             }
+            Event::Paste(text) => {
+                redraw |= ui.on_scroll(lines, columns);
+                (lines, columns) = (0, 0);
+                redraw |= ui.on_paste(&text);
+            }
             Event::Resize(..) => redraw = true,
             _ => {}
         }
@@ -261,12 +283,14 @@ fn with_terminal_suspended<T>(
     mouse: bool,
     f: impl FnOnce() -> T,
 ) -> T {
+    set_paste(false);
     set_mouse(false);
     let _ = execute!(io::stdout(), LeaveAlternateScreen);
     let _ = disable_raw_mode();
     let out = f();
     let _ = enable_raw_mode();
     let _ = execute!(io::stdout(), EnterAlternateScreen);
+    set_paste(true);
     if mouse {
         set_mouse(true);
     }

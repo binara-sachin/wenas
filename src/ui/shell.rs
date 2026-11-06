@@ -439,6 +439,16 @@ impl Ui for Shell {
         }
     }
 
+    fn on_paste(&mut self, text: &str) -> bool {
+        if self.large_pending.is_some() || self.quit_modal {
+            return false;
+        }
+        match self.current.and_then(|i| self.open.get_mut(&i)) {
+            Some(app) => app.on_paste(text),
+            None => self.dir.on_paste(text),
+        }
+    }
+
     fn tick(&mut self) {
         self.dir.poll();
         if let Some(app) = self.current.and_then(|i| self.open.get_mut(&i)) {

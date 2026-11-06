@@ -353,6 +353,22 @@ impl DirView {
         self.pending_g = false;
     }
 
+    /// Pasted text goes into the name search prompt and nowhere else.
+    pub fn on_paste(&mut self, text: &str) -> bool {
+        if self.help {
+            return false;
+        }
+        self.pending_g = false;
+        match &mut self.prompt {
+            Some(p) => p.push_str(&super::paste_line(text)),
+            None => {
+                self.message = Some(super::PASTE_IGNORED.into());
+                self.message_is_error = true;
+            }
+        }
+        true
+    }
+
     /// Wheel movement, keeping the selection on screen. Returns whether anything changed.
     pub fn on_scroll(&mut self, lines: isize) -> bool {
         let Some(last) = self.shown.len().checked_sub(1) else {

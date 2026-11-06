@@ -58,6 +58,7 @@ Automated tests cannot cover the terminal itself. Before each release, on macOS 
 - [ ] Trackpad and mouse wheel scroll at a comfortable speed, stop when the gesture stops, and a sideways swipe scrolls the panes. Check tmux with `mouse on` and `mouse off`.
 - [ ] Click a row, click `→` in the gutter (then `u`), and double-click a file in the directory view.
 - [ ] Shift-drag selects text, and `mouse = false` gives the wheel and selection back to the terminal.
+- [ ] Paste `QQ` into the file view: the status line says `paste ignored` and nothing quits. Paste into the `/` prompt: the text appears there. Check inside tmux too.
 - [ ] Leave Neovim after `e`: the mouse still works in wenas. After `q`, and after `kill <pid>` from another pane, moving and clicking the mouse prints nothing in the shell.
 
 ## After the release: verify the install

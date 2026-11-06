@@ -840,6 +840,20 @@ impl App {
         self.pending = None;
     }
 
+    /// Pasted text goes into the search prompt and nowhere else: it never runs
+    /// as keys, and never answers a question.
+    pub fn on_paste(&mut self, text: &str) -> bool {
+        if self.modal.is_some() || self.help || self.session.is_busy() || self.binary.is_some() {
+            return false;
+        }
+        self.pending = None;
+        match &mut self.prompt {
+            Some(p) => p.text.push_str(&super::paste_line(text)),
+            None => self.error(super::PASTE_IGNORED),
+        }
+        true
+    }
+
     fn center_top(&mut self, row: usize) {
         self.cursor = row;
         self.top = 0;
